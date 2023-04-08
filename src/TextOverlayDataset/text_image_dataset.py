@@ -4,6 +4,7 @@ text_image_dataset.py
 import os
 import random
 from glob import glob
+from io import BytesIO
 from typing import List, Optional, Tuple, Union
 
 import numpy
@@ -105,7 +106,7 @@ class TextOverlayDataset(Dataset):
 
         # PIL font loading behaves a little strangely when shared across threads.  We have to load our fonts after the
         # dataset is forked or we get sharing problems.
-        self.font_choices = glob(str(font_directory) + os.pathsep + "*.*tf")  # *.*tf gives us TTF and OTF.
+        self.font_choices = glob(os.path.join(font_directory, "*.*tf"))  # *.*tf gives us TTF and OTF.
         self.loaded_fonts = None  # This will become a dict [str -> font].
 
         # For dataset iteration, do we need to randomly sample from one of the input datasets?
@@ -183,7 +184,7 @@ class TextOverlayDataset(Dataset):
         while max_retries > 0:  # We check again at the tail of this function and may break out there instead.
             max_retries -= 1
             alignment = random.choice(["left", "center", "right"])
-            size_idx = random.randint(0, len(self.font_sizes))  # We pick a random starting size for our font.
+            size_idx = random.randint(0, len(self.font_sizes)-1)  # We pick a random starting size for our font.
             font_size = self.font_sizes[size_idx]
             font_choice = random.choice(self.font_choices)
 
@@ -193,8 +194,12 @@ class TextOverlayDataset(Dataset):
                     # On Windows the TrueType system keeps fonts open until the TTF object goes out of scope.  This caps
                     # the number of open fonts to 512 and can lead to OSErrors on load.  We get around this by copying
                     # the font into memory first.
+                    print(font_choice)
                     with open(font_choice, 'rb') as fin:
-                        self.loaded_fonts[font_choice] = fin.read()
+                        buffer = BytesIO()
+                        buffer.write(fin.read())
+                        self.loaded_fonts[font_choice] = buffer
+                self.loaded_fonts[font_choice].seek(0)
                 font = ImageFont.truetype(
                     self.loaded_fonts[font_choice],
                     font_size,
