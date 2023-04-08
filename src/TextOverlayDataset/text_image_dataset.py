@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple, Union
 
 import numpy
 import torch
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTransform
 from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision.transforms.functional import to_tensor, to_pil_image
@@ -144,9 +144,10 @@ class TextOverlayDataset(Dataset):
          - image (as a numpy array)
          - the text overlaid upon the image (string)
          - the un-composited text (a text overlay as a numpy array)
+         - a numpy array with the four corners of the bounding box
         """
-        composite, text, raster = self._generate_image_mask_pair(idx)
-        return composite, text, raster
+        composite, text, raster, bounding_box = self._generate_image_mask_pair(idx)
+        return composite, text, raster, bounding_box
 
     def get_image(self, idx):
         """Return either the image at position idx or a random image, depending on the value of 'randomly_chose'."""
@@ -160,7 +161,7 @@ class TextOverlayDataset(Dataset):
             return self.text_dataset[random.randint(0, len(self.text_dataset)-1)]
         return self.text_dataset[idx]
 
-    def _generate_text_raster(
+    def _generate_text_raster_basic(
             self,
             text: str,
             width: int,
@@ -221,7 +222,40 @@ class TextOverlayDataset(Dataset):
         # Cannot fit the given text in the image.
         # TODO: Raise exception OR return empty, depending on setting.
 
-    def _generate_image_mask_pair(self, index: int) -> Tuple[Image.Image, str, Image.Image]:
+    def _generate_text_raster_augmented(
+            self,
+            text: str,
+            width: int,
+            height: int,
+            max_rotation: float = 0.0,
+            max_translation: float = 0.0,
+    ) -> Tuple[Image.Image, numpy.ndarray]:
+        text_image_mask, text_bbox = self._generate_text_raster_basic(text, width, height)
+        text_image_mask = text_image_mask.convert('L')
+        # text_bbox is left, top, right, bottom.  Let's transform it into a set of four points so we can do linear
+        # transforms on it (rotations + scale + translation).
+        bbox = numpy.asarray([
+            [text_bbox[0], text_bbox[1], 1],
+            [text_bbox[2], text_bbox[1], 1],
+            [text_bbox[0], text_bbox[3], 1],
+            [text_bbox[2], text_bbox[3], 1],
+        ])
+        # TODO: Compute the maximum rotation and translation that we can apply to this block of text.
+        return text_image_mask, bbox
+
+    def _generate_image_mask_pair(self, index: int) -> Tuple[Image.Image, str, Image.Image, numpy.ndarray]:
+        """
+        Generate a 4-tuple of composited image+text, the text, the text mask, and a numpy array of shape 4x2 with the
+        bounding box corners.
+
+        There are three sections to this function:
+        - Image preloading and prep where we do all the pre-transforms to ensure our image is in the right format,
+        - Text raster augmentation, where we take and transform the text raster.
+        - Text raster composition, where we composite the rasterized text in a nice color over the image.
+
+        :param index:
+        :return Tuple[Image.Image, str, Image.Image, numpy.generic]:
+        """
         img = self.get_image(index)
         text = self.get_text(index)
 
@@ -246,8 +280,7 @@ class TextOverlayDataset(Dataset):
             img_arr = numpy.array(img_pil)
 
         # Generate some random text:
-        text_image_mask, text_bbox = self._generate_text_raster(text, img_pil.width, img_pil.height)
-        text_image_mask = text_image_mask.convert('L')
+        text_image_mask, bounding_box = self._generate_text_raster_augmented(text, img_pil.width, img_pil.height)
 
         # Glorious hack to make a red mask:
         # red_channel = img_pil[0].point(lambda i: i < 100 and 255)
@@ -276,4 +309,4 @@ class TextOverlayDataset(Dataset):
         # Maybe dilate the mask?
         #text_image_mask = text_image_mask.filter(ImageFilter.MaxFilter(self.random_text_mask_dilation))
 
-        return img_pil, text, text_image_mask
+        return img_pil, text, text_image_mask, bounding_box
