@@ -11,7 +11,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from torch.utils.data import Dataset
 from torchvision import datasets
-from torchvision.transforms import ToTensor
+from torchvision.transforms.functional import to_tensor, to_pil_image
 
 
 class TextOverlayDataset(Dataset):
@@ -21,7 +21,7 @@ class TextOverlayDataset(Dataset):
     """
     def __init__(
             self,
-            image_dataset: Dataset,
+            image_dataset: Union[List[Image.Image], Dataset],
             text_dataset: Union[List[str], Dataset],
             font_directory: Union[os.PathLike, str],
 
@@ -59,7 +59,8 @@ class TextOverlayDataset(Dataset):
 
         :param list pre_composite_transforms:
         The torchvision transforms that will be called (in order) on the sampled image.
-        There are no guarantees about the Image format (numpy or pil or tensor).
+        There are no guarantees about the Image format (numpy or pil or tensor). If your dataset returns non-Image data
+        it might be necessary to add a transform to convert it into a PIL image.
 
         :param list post_composite_transforms:
         A convenience method.  They will be run on the output image before it is returned.
@@ -99,7 +100,7 @@ class TextOverlayDataset(Dataset):
         self.text_dataset = text_dataset
 
         self.pre_composite_transforms = pre_composite_transforms
-        self.pre_composite_transforms = post_composite_transforms
+        self.post_composite_transforms = post_composite_transforms
         self.text_raster_transforms = text_raster_transforms
 
         # PIL font loading behaves a little strangely when shared across threads.  We have to load our fonts after the
@@ -143,28 +144,35 @@ class TextOverlayDataset(Dataset):
          - the text overlaid upon the image (string)
          - the un-composited text (a text overlay as a numpy array)
         """
-        pass
+        composite, text, raster = self._generate_image_mask_pair(idx)
+        return composite, text, raster
 
     def get_image(self, idx):
         """Return either the image at position idx or a random image, depending on the value of 'randomly_chose'."""
         if self.randomize_image:
-            return self.image_dataset[random.randint(0, len(self.image_dataset))]
+            return self.image_dataset[random.randint(0, len(self.image_dataset)-1)]
         return self.image_dataset[idx]
 
     def get_text(self, idx):
         """Return either the text at position idx or a random string, depending on the value of 'randomly_chose'."""
         if self.randomize_text:
-            return self.text_dataset[random.randint(0, len(self.text_dataset))]
+            return self.text_dataset[random.randint(0, len(self.text_dataset)-1)]
         return self.text_dataset[idx]
 
-    def _generate_text_raster(self, text: str, width: int, height: int, max_retries: int = 10) -> Image.Image:
+    def _generate_text_raster(
+            self,
+            text: str,
+            width: int,
+            height: int,
+            max_retries: int = 10
+    ) -> Tuple[Image.Image, Tuple[int, int, int, int]]:
         """
         We will try to pick a font, layout  the text, and then fit it into the image up to X times.
 
         :param text:
         :param width:
         :param height:
-        :return:
+        :return: A tuple of the resulting PIL image and a bounding box of left, up, right, bottom.
         """
         if self.loaded_fonts is None:
             self.loaded_fonts = dict()
@@ -202,7 +210,7 @@ class TextOverlayDataset(Dataset):
                 # We may have to recenter the text.
                 if text_width < width and text_height < height:
                     draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment)
-                    return canvas
+                    return canvas, (left, top, right, bottom)
                 size_idx -= 1
         # If we're here, we've run out of retries.
         # Cannot fit the given text in the image.
@@ -212,64 +220,55 @@ class TextOverlayDataset(Dataset):
         img = self.get_image(index)
         text = self.get_text(index)
 
+        assert img, f"img at index {index} is null!"
+
         # Run the pre-composite transformations.
         if self.pre_composite_transforms is not None:
             for tf in self.pre_composite_transforms:
                 img = tf(img)
 
         # It's possible the outputs of these transforms is not a PIL image:
+        assert img, "One or more pre_compose_transforms has yielded a null. Make sure your functions return values."
+        img_pil = img.copy()  # Avoid messing with the original dataset if we happen to be getting refs.
+        img_arr = numpy.array(img_pil)
         if isinstance(img, Image.Image):
-            pass  # NOOP
-        elif isinstance(img, (numpy.ndarray, numpy.generic, torch.tensor)):
-            if isinstance(img, torch.Tensor):
-                # Pull this instance to the CPU from the GPU, then treat it as though it were a numpy array.
-                img = img.detach().numpy()
-            img = Image.fromarray(img)
+            pass  # Noop.  Got things as expected.
+        elif isinstance(img, (numpy.ndarray, numpy.generic, torch.Tensor)):
+            img_pil = to_pil_image(img).convert("RGB")
+            # Image.fromarray(img) won't convert the channels-first format.
+            # We still have to sanity check this.
+            # TODO: It's wasteful to convert to PIL and immediately back to a tensor, but it guarantees we get HWC.
+            img_arr = numpy.array(img_pil)
 
         # Generate some random text:
-        text_image_mask, text, text_rotation = self.random_text_image()
+        text_image_mask, text_bbox = self._generate_text_raster(text, img_pil.width, img_pil.height)
         text_image_mask = text_image_mask.convert('L')
 
         # Glorious hack to make a red mask:
         # red_channel = img_pil[0].point(lambda i: i < 100 and 255)
 
-        # Draw the text image on top of our sample image.
+        # This next operation requires a quick iteration over the input image to determine a good color to use.
+        # We would do well to pick a color outside of any used in the region, but that's a hard problem.
+        # For now, use the simply bright/dark heuristic and figure out something more clever later.
+        # TODO: Find a better system of determining font color.
         # if (red * 0.299 + green * 0.587 + blue * 0.114) > 186 use  # 000000 else use #ffffff
-        total_color = [0, 0, 0]
-        total_pixels = 0
-        for y in range(self.target_height):
-            for x in range(self.target_width):
-                mask = text_image_mask.getpixel((x, y))
-                if mask > 128:
-                    px = img_pil.getpixel((x, y))
-                    total_color[0] += px[0]
-                    total_color[1] += px[1]
-                    total_color[2] += px[2]
-                    total_pixels += 1
+        total_pixels = (img_pil.width*img_pil.height)+1e-6
+        avg_r, avg_g, avg_b = img_arr.sum(axis=0).sum(axis=0) / total_pixels
 
-        # In the off chance we have a completely blank image, save some compute.
-        if total_pixels > 0:
-            avg_r = total_color[0] // total_pixels
-            avg_g = total_color[1] // total_pixels
-            avg_b = total_color[2] // total_pixels
+        # Default to light color...
+        text_color = [random.randint(150, 255), random.randint(150, 255), random.randint(150, 255)]
+        if (avg_r * 0.299 + avg_g * 0.587 + avg_b * 0.114) > 186:
+            # Our image is bright.  Use a dark color.
+            text_color = [random.randint(0, 75), random.randint(0, 75), random.randint(0, 75)]
+        # Have to convert text color to a hex string for Image.new.
+        text_color = f"#{text_color[0]:02X}{text_color[1]:02X}{text_color[2]:02X}"
+        # Make a rectangle of this color and use the rasterized text as the alpha channel, then paste it onto pil_img.
+        # TODO: Add noise to the color block?
+        text_color_block = Image.new("RGB", (img_pil.width, img_pil.height), color=text_color)
+        text_color_block.putalpha(text_image_mask)
+        img_pil.paste(text_color_block, (0, 0), text_image_mask)
 
-            # Default to light color...
-            text_color = [random.randint(150, 255), random.randint(150, 255), random.randint(150, 255)]
-            if (
-                    avg_r * 0.299 + avg_g * 0.587 + avg_b * 0.114) > 125:  # 186 comes from the algorithm but is a little hard to see.
-                # Unless our image is bright, in which case use dark color.
-                text_color = [random.randint(0, 75), random.randint(0, 75), random.randint(0, 75)]
-            # Have to convert text color to a hex string.  :rolleges:
-            text_color = f"#{text_color[0]:02X}{text_color[1]:02X}{text_color[2]:02X}"
-            # Make a rectangle of this color and paste it in with an image mask.
-            text_color_block = Image.new("RGB", (self.target_width, self.target_height), color=text_color)
-            # Maybe add noise to the color block.
-            if self.text_noise > 0:
-                pass
-            img_pil.paste(text_color_block, (0, 0), text_image_mask)
+        # Maybe dilate the mask?
+        #text_image_mask = text_image_mask.filter(ImageFilter.MaxFilter(self.random_text_mask_dilation))
 
-        # Now dilate the text_image_mask to simulate highlighting a block.
-        if self.random_text_mask_dilation > 0:
-            text_image_mask = text_image_mask.filter(ImageFilter.MaxFilter(self.random_text_mask_dilation))
-
-        return img_pil, text_image_mask, text, text_rotation
+        return img_pil, text, text_image_mask
