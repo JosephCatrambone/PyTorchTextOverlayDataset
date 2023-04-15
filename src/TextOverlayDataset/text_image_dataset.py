@@ -1,6 +1,7 @@
 """
 text_image_dataset.py
 """
+import math
 import os
 import random
 from glob import glob
@@ -9,10 +10,12 @@ from typing import List, Optional, Tuple, Union
 
 import numpy
 import torch
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTransform
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision.transforms.functional import to_tensor, to_pil_image
+
+from .bounding_box_tools import aabb_to_bbox, bbox_to_aabb, rotate_around_point
 
 
 class TextOverlayDataset(Dataset):
@@ -83,8 +86,10 @@ class TextOverlayDataset(Dataset):
         dataset will be min(image_dataset, text_dataset).
 
         :param bool empty_string_on_truncation:
-        Defaults to true.  If an image is too small to fit the given text sample, return an empty string and do not
-        perform any text compositing.  If 'false', will raise an exception on truncation.
+        If true (default), when text cannot be written to an image in a way that is legible, either because the image
+        itself is too small to support a given string or a string is too large to be fit on any image (e.g., trying to
+        fit War and Peace on a 16x16 image), the generator will instead return an empty text and an empty image.
+        If this is false, will raise an exception.
 
         :param List[int] font_sizes:
         A list of valid font sizes from which we can select.  If 'None' (default), will use [8, 10, 12, 16, 20, 24, 36,
@@ -107,6 +112,7 @@ class TextOverlayDataset(Dataset):
         # PIL font loading behaves a little strangely when shared across threads.  We have to load our fonts after the
         # dataset is forked or we get sharing problems.
         self.font_choices = glob(os.path.join(font_directory, "*.*tf"))  # *.*tf gives us TTF and OTF.
+        assert self.font_choices, f"No fonts detected in font_directory: {font_directory}"
         self.loaded_fonts = None  # This will become a dict [str -> font].
 
         # For dataset iteration, do we need to randomly sample from one of the input datasets?
@@ -167,14 +173,13 @@ class TextOverlayDataset(Dataset):
             width: int,
             height: int,
             max_retries: int = 10
-    ) -> Tuple[Image.Image, Tuple[int, int, int, int]]:
+    ) -> Tuple[bool, Image.Image, Tuple[int, int, int, int]]:
         """
-        We will try to pick a font, layout  the text, and then fit it into the image up to X times.
-
+        We will try to pick a font, layout the text, and then fit it into the image up to X times.
         :param text:
         :param width:
         :param height:
-        :return: A tuple of the resulting PIL image and a bounding box of left, up, right, bottom.
+        :return: A tuple of success/failure, a LUMA PIL image, and a bounding box of left, up, right, bottom.
         """
         if self.loaded_fonts is None:
             self.loaded_fonts = dict()
@@ -207,7 +212,7 @@ class TextOverlayDataset(Dataset):
                     layout_engine=self.layout
                 )
                 # Try and generate the text.
-                canvas = Image.new('RGB', (width, height), color='black')
+                canvas = Image.new('L', (width, height), color=0)
                 draw = ImageDraw.Draw(canvas)
                 text_bbox = draw.textbbox((width//2, height//2), text, font=font, anchor="mm", align=alignment)
                 left, top, right, bottom = text_bbox
@@ -215,33 +220,148 @@ class TextOverlayDataset(Dataset):
                 text_height = abs(top-bottom)
                 # We may have to recenter the text.
                 if text_width < width and text_height < height:
-                    draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment)
-                    return canvas, (left, top, right, bottom)
+                    draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
+                    return True, canvas, (left, top, right, bottom)
                 size_idx -= 1
         # If we're here, we've run out of retries.
         # Cannot fit the given text in the image.
         # TODO: Raise exception OR return empty, depending on setting.
+        return False, None, None
 
-    def _generate_text_raster_augmented(
+    def _generate_text_raster_advanced(
             self,
             text: str,
             width: int,
             height: int,
-            max_rotation: float = 0.0,
-            max_translation: float = 0.0,
-    ) -> Tuple[Image.Image, numpy.ndarray]:
-        text_image_mask, text_bbox = self._generate_text_raster_basic(text, width, height)
-        text_image_mask = text_image_mask.convert('L')
-        # text_bbox is left, top, right, bottom.  Let's transform it into a set of four points so we can do linear
-        # transforms on it (rotations + scale + translation).
-        bbox = numpy.asarray([
-            [text_bbox[0], text_bbox[1], 1],
-            [text_bbox[2], text_bbox[1], 1],
-            [text_bbox[0], text_bbox[3], 1],
-            [text_bbox[2], text_bbox[3], 1],
-        ])
-        # TODO: Compute the maximum rotation and translation that we can apply to this block of text.
-        return text_image_mask, bbox
+            max_rotation_percent: float = 0.0,
+            max_translation_percent: float = 0.0,
+    ) -> Tuple[bool, Image.Image, numpy.ndarray]:
+        """Move the rasterized text around, keeping all corners inside the width/height.
+        Returns success/failure, the image, and the points on the axis-aligned bounding box as a 4x3 array.
+        If max_rotation_percent is zero and max_translation_percent is zero this is equivalent to the
+        _generate_text_raster_basic method and will behave similarly (except for returning aabb instead of bbox).
+        """
+        success, text_image_mask, text_bbox = self._generate_text_raster_basic(text, width, height)
+        if not success:
+            # JC: It would be nice to keep this signature in sync with the _basic version.  Does it help to enforce it
+            # here, or should we return False, None, None?
+            return success, text_image_mask, text_bbox
+        assert text_image_mask.mode == 'L'
+
+        aabb = bbox_to_aabb(*text_bbox)
+
+        # If there are no translation or rotation operations, save the compute and return early.
+        if abs(max_rotation_percent) < 1e-6 and abs(max_translation_percent) < 1e-6:
+            return success, text_image_mask, aabb
+
+        if max_rotation_percent > 0.0:
+            min_angle, max_angle = self._compute_min_max_text_angle(text_bbox, width, height)
+            rotation = random.uniform(0, (max_angle-min_angle)*max_rotation_percent) + min_angle
+            aabb = rotate_around_point(aabb, rotation, width*0.5, height*0.5)
+
+        # In theory it would be possible to do the translation and rotation in one matmul, but we don't know the limits
+        # of the translation before we do the rotation.
+        previous_bbox = text_bbox
+        text_bbox = aabb_to_bbox(aabb)
+        # Some sanity checking.  Our compute method should have made sure that we can't rotate the quad past the edge.
+        in_bounds = \
+            0 <= text_bbox[0] <= width and \
+            0 <= text_bbox[1] <= height and \
+            0 <= text_bbox[2] <= width and \
+            0 <= text_bbox[3] <= height
+        if not in_bounds:
+            print(previous_bbox)
+            print(aabb)
+            print(text_bbox)
+            print(width)
+            print(height)
+        assert in_bounds
+
+        # Prep translation:
+        dx = 0
+        dy = 0
+        if max_translation_percent > 0:
+            # Text bbox is, coincidentally, the amount we can jitter the text left/right and top/bottom.
+            # JC: Variable name choice: Slop?  Play?  Tolerance?
+            max_left_movement = -int(text_bbox[0])
+            max_up_movement = -int(text_bbox[1])
+            max_right_movement = width - int(text_bbox[2])
+            max_down_movement = height - int(text_bbox[3])
+            dx = random.randrange(
+                int(max_translation_percent * max_left_movement),
+                int(max_translation_percent * max_right_movement)
+            )
+            dy = random.randrange(
+                int(max_translation_percent * max_up_movement),
+                int(max_translation_percent * max_down_movement)
+            )
+        # Translate by this amount.
+        aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
+        # PIL expects the _source_ quad to map to the full width, not the target quad.  We can just invert the op.
+        inv_aabb = numpy.asarray([
+            [0, 0, 1],
+            [width, 0, 1],
+            [width, height, 1],
+            [0, height, 1],
+        ]) - aabb
+        # This one-line magic converts our 2D array of [[x, y], [x, y], ...] to a list of [x, y, x, y, ...]
+        quad = inv_aabb[:, :2].reshape(1, -1)[0]
+        #transform = ImageTransform.QuadTransform(quad)  # Perhaps outdated?
+        text_image_mask = text_image_mask.transform(text_image_mask.size, Image.QUAD, quad)
+
+        return True, text_image_mask, aabb
+
+    def _compute_min_max_text_angle(
+            self,
+            text_bbox: Tuple[int, int, int, int],
+            image_width: int,
+            image_height: int
+    ) -> Tuple[float, float]:
+        """
+        Compute the maximum rotation and translation that we can apply to this block of text.
+        There's a little basic trig in here.  I think there's a more optimal way to determine this value, but it
+        requires a better mind.
+
+        ```
+        +------ Width_img / 2 ----------+
+        |                               |
+        +-- Width_txt/2 ----(A)       Height_img/2
+        |                    |          |
+        | Theta_txt    Height_txt/2     |
+        +--------------------+----------+
+        ```
+
+        The point A is the top-right corner of the rectangle defined by the text.
+        We want to ensure that A is below height_img/2 and to the left of width_img/2.
+        Because the rectangle is balanced and symmetric, we ensure that the other corners are inside the rect, too.
+        Theta_txt refers to the rotation of the whole text box and starts at zero.
+        Theta_a (not labeled) is the angle of A when Theta_txt is zero.  (A.k.a., the starting angle of point A.)
+        Theta_a = atan(height_txt/2 / width_txt/2), which simplifies to atan(height_txt/width_txt).
+        A moves to the right and reaches max when Theta_txt hits -Theta_A.
+        A moves up and reaches a max when Theta_A is pi/2 (90), so a minx/maxy at Theta_txt + Theta_a = pi/2.
+        We have two cases to check for A_x and A_y.  If A_x is less than or equal to Width_img/2 at max and A_y is less
+        than or equal to Height_img/2, we have no constraint on the rotation.
+        :param text_bbox: The [left, top, right, bottom] of the text. Assumed to be centered at the box's center.
+        :param image_width: The full width of the enclosing image.
+        :param image_height: The full height of the enclosing image.
+        :return Tuple[float, float]: The minimum and maximum angles or (0, 2*pi) if there is no limit.
+        """
+        text_left, text_top, text_right, text_bottom = text_bbox
+        text_halfwidth = abs(text_right - text_left) * 0.5
+        text_halfheight = abs(text_top - text_bottom) * 0.5
+        text_radius = math.sqrt(text_halfwidth**2 + text_halfheight**2)
+        angle_pa = math.atan2(text_halfheight, text_halfwidth)  # The 0.5 cancels in atan(dy*0.5 / dx*0.5).
+        min_angle = 0.0
+        max_angle = 2.0*math.pi
+        cos_min_angle = image_width*0.5 / text_radius
+        sin_max_angle = image_height*0.5 / text_radius
+        if -1 < cos_min_angle < 1:
+            # We are constrained.  :(
+            min_angle = math.acos(cos_min_angle) - angle_pa
+        if -1 < sin_max_angle < 1:
+            # Constrained by ceiling.
+            max_angle = math.asin(sin_max_angle) - angle_pa
+        return min_angle, max_angle
 
     def _generate_image_mask_pair(self, index: int) -> Tuple[Image.Image, str, Image.Image, numpy.ndarray]:
         """
@@ -280,7 +400,11 @@ class TextOverlayDataset(Dataset):
             img_arr = numpy.array(img_pil)
 
         # Generate some random text:
-        text_image_mask, bounding_box = self._generate_text_raster_augmented(text, img_pil.width, img_pil.height)
+        success, text_image_mask, bbox = self._generate_text_raster_advanced(text, img_pil.width, img_pil.height)
+        # It's possible the text we tried to add could not be composited onto an image.
+        if not success:
+            if self.empty_string_on_truncation:
+                return img_pil, "", Image.new('RGB')
 
         # Glorious hack to make a red mask:
         # red_channel = img_pil[0].point(lambda i: i < 100 and 255)
@@ -309,4 +433,4 @@ class TextOverlayDataset(Dataset):
         # Maybe dilate the mask?
         #text_image_mask = text_image_mask.filter(ImageFilter.MaxFilter(self.random_text_mask_dilation))
 
-        return img_pil, text, text_image_mask, bounding_box
+        return img_pil, text, text_image_mask, bbox
