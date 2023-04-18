@@ -233,8 +233,8 @@ class TextOverlayDataset(Dataset):
             text: str,
             width: int,
             height: int,
-            max_rotation_percent: float = 0.0,
             max_translation_percent: float = 0.0,
+            max_rotation_percent: float = 0.0,
     ) -> Tuple[bool, Image.Image, numpy.ndarray]:
         """Move the rasterized text around, keeping all corners inside the width/height.
         Returns success/failure, the image, and the points on the axis-aligned bounding box as a 4x3 array.
@@ -318,9 +318,15 @@ class TextOverlayDataset(Dataset):
             image_height: int
     ) -> Tuple[float, float]:
         """
-        Compute the maximum rotation and translation that we can apply to this block of text.
+        Compute the maximum rotation and translation that we can apply to this block of text, assuming the pivot point
+        is the center of the text bounding box.
+
+        Explanation of this function:
         There's a little basic trig in here.  I think there's a more optimal way to determine this value, but it
         requires a better mind.
+
+        Start by moving the image_width to the left so that the rotation axis coincides with the center of whatever
+        space is left over.
 
         ```
         +------ Width_img / 2 ----------+

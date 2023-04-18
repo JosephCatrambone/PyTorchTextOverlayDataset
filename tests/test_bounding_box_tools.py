@@ -2,6 +2,7 @@
 test_bounding_box_tools.py
 """
 
+import math
 import unittest
 
 import numpy
@@ -25,6 +26,32 @@ class TestBoundingBoxTools(unittest.TestCase):
         self.assertEqual(bottom, 11)
         self.assertEqual(bbox, (-10, -5, 4, 11))
         #with self.assertRaises(TypeError):
+
+    def test_generate_rotation_matrix(self):
+        rotmat_0 = make_rotation_matrix_2d(0.0)
+        self.assertTrue(numpy.allclose(numpy.eye(3), rotmat_0))
+
+        rotmat_90 = make_rotation_matrix_2d(math.pi/2)
+        # Recall: cos(90) = 0.  sin(90) = 1
+        self.assertTrue(numpy.allclose(numpy.asarray([
+            [0, 1, 0.0],
+            [-1, 0, 0.0],
+            [0, 0, 1.0],
+        ]), rotmat_90))
+
+    def test_rotation(self):
+        # DEBUG: Just visualizing the rotation process.
+        point_at_x1 = numpy.asarray([[1, 0, 1.0]])
+
+        point_at_y1 = rotate_around_point(point_at_x1, math.pi/2.0, 0, 0)  # rotate about the origin.
+        self.assertAlmostEqual(point_at_y1[0, 0], 0.0)
+        self.assertAlmostEqual(point_at_y1[0, 1], 1.0)
+
+        for i in range(0, 100):
+            rotation = (2*math.pi / 100)*i
+            rotated_point = rotate_around_point(point_at_x1, rotation, 0, 0)
+            self.assertAlmostEqual(rotated_point[0, 0], math.cos(rotation))
+            self.assertAlmostEqual(rotated_point[0, 1], math.sin(rotation))
 
 
 if __name__ == '__main__':

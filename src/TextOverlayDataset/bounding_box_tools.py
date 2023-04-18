@@ -28,17 +28,29 @@ def bbox_to_aabb(left: float, top: float, right: float, bottom: float) -> numpy.
 
 
 def make_rotation_matrix_2d(angle: float) -> numpy.ndarray:
+    """Generate a 3x3 rotation around the z axis.
+    Since we're multiplying on the _RIGHT_, we're transposing the matrix.
+    This means that this will keep rotation consistent with cos(t), sin(t).  Phrased differently, if you multiply a
+    point [1, 0, 1] @ this matrix, you would get what you would expect from doing (cos(t), sin(t)).
+    This matches with a counter-clockwise rotation in a right-handed space (y-up) or a counter-clockwise space in a left
+     handed space (y-down).
+    :param angle:
+    :return:
+    """
     # Remember: x' = xcos(t) - ysin(t),  y' = xsin(t) + ycos(t)
     rotation_matrix_2d = numpy.eye(3)
     rotation_matrix_2d[0, 0] = math.cos(angle)
-    rotation_matrix_2d[0, 1] = -math.sin(angle)
-    rotation_matrix_2d[1, 0] = math.sin(angle)
+    rotation_matrix_2d[0, 1] = math.sin(angle)
+    rotation_matrix_2d[1, 0] = -math.sin(angle)
     rotation_matrix_2d[1, 1] = math.cos(angle)
     return rotation_matrix_2d
 
 
 def rotate_around_point(points: numpy.generic, angle: float, x: float, y: float) -> numpy.ndarray:
-    """Rotate each point (row) in the given points by angle radians around the point x, y."""
+    """Rotate each point (row) in the given points by angle radians around the point x, y in a counter-clockwise direct-
+    ion, assuming y-down. Remember that PIL uses a left-handed y-down chirality.  Increasing angle rotates counter-
+    clockwise.
+    """
     p = numpy.asarray([x, y, 1.0])
     points -= p
     points = points @ make_rotation_matrix_2d(angle)
