@@ -227,7 +227,7 @@ class TextOverlayDataset(Dataset):
         # Cannot fit the given text in the image.
         if self.empty_string_on_truncation:
             return False, None, None
-        raise ValueError(f"Text with length {len(text)} is too large to fit in the image with size {width}x{height} and empty_string_on_truncation is false.")
+        raise ValueError(f"Text with length {len(text)} is too large to fit in the image with size {width}x{height}.")
 
     def _generate_text_raster_advanced(
             self,
@@ -253,7 +253,9 @@ class TextOverlayDataset(Dataset):
         aabb = bbox_to_aabb(*text_bbox)
 
         # If there are no translation or rotation operations, save the compute and return early.
-        if abs(max_rotation_percent) < 1e-6 and abs(max_translation_percent) < 1e-6 and abs(max_quad_distortion_percent) < 1e-6:
+        if abs(max_rotation_percent) < 1e-6 \
+                and abs(max_translation_percent) < 1e-6 \
+                and abs(max_quad_distortion_percent) < 1e-6:
             return success, text_image_mask, aabb
 
         if max_rotation_percent > 0.0:
@@ -302,7 +304,7 @@ class TextOverlayDataset(Dataset):
         if max_quad_distortion_percent > 0.0:
             internal_external_matching = find_lowest_cost_assignment(aabb, image_bounding_box)
             # For each edge in the aabb, move it as far as the respective corner.
-            for from_point_idx in range(0, 4):
+            for from_point_index in range(0, 4):
                 to_point_index = internal_external_matching[from_point_index]
                 max_dx = random.randrange(aabb[from_point_index, 0], image_bounding_box[to_point_index, 0])
                 max_dy = random.randrange(aabb[from_point_index, 1], image_bounding_box[to_point_index, 1])
