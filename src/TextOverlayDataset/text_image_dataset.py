@@ -270,13 +270,12 @@ class TextOverlayDataset(Dataset):
 
         # In theory it would be possible to do the translation and rotation in one matmul, but we don't know the limits
         # of the translation before we do the rotation.
-        previous_bbox = text_bbox
-        text_bbox = aabb_to_bbox(aabb)
 
         # Prep translation:
         dx = 0
         dy = 0
         if max_translation_percent > 0:
+            text_bbox = aabb_to_bbox(aabb)
             # Text bbox is, coincidentally, the amount we can jitter the text left/right and top/bottom.
             # JC: Variable name choice: Slop?  Play?  Tolerance?
             max_left_movement = -int(text_bbox[0])
@@ -293,6 +292,10 @@ class TextOverlayDataset(Dataset):
             )
         # Translate by this amount.
         aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
+
+        # Ordering of this depends on the PIL Quad Transform:
+        # Quad distortion means taking each of the points around axis-aligned bounding box and moving it at most up to
+        # the nearest corner.
         image_bounding_box = numpy.asarray([
             [0, 0, 1],
             [width, 0, 1],
@@ -300,15 +303,19 @@ class TextOverlayDataset(Dataset):
             [0, height, 1]
         ])
 
-        # Quad distortion means taking each of the points around axis-aligned bounding box and moving it as far as the nearest corner.
         if max_quad_distortion_percent > 0.0:
             internal_external_matching = find_lowest_cost_assignment(aabb, image_bounding_box)
             # For each edge in the aabb, move it as far as the respective corner.
             for from_point_index in range(0, 4):
                 to_point_index = internal_external_matching[from_point_index]
-                max_dx = random.randrange(aabb[from_point_index, 0], image_bounding_box[to_point_index, 0])
-                max_dy = random.randrange(aabb[from_point_index, 1], image_bounding_box[to_point_index, 1])
-            # TODO: Start here.
+                start_x = aabb[from_point_index, 0]
+                end_x = image_bounding_box[to_point_index, 0]
+                start_y = aabb[from_point_index, 1]
+                end_y = image_bounding_box[to_point_index, 1]
+                delta_x = (random.randrange(0, end_x - start_x)*max_rotation_percent) + start_x
+                delta_y = (random.randrange(0, end_y - start_y)*max_rotation_percent) + start_y
+                aabb[from_point_index, 0] += delta_x
+                aabb[from_point_index, 1] += delta_y
         
         # PIL expects the _source_ quad to map to the full width, not the target quad.  We can just invert the op.
         inv_aabb = image_bounding_box - aabb
