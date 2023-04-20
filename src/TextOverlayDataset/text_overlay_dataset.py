@@ -39,6 +39,9 @@ class TextOverlayDataset(Dataset):
 
             only_english_support: bool = False,
 
+            maximum_font_translation_percent: float = 0.0,
+            maximum_font_rotation_percent: float = 0.0,
+            maximum_font_quad_distortion_percent: float = 0.0,
             # TODO: Unused!
             maximum_font_outline_size: int = 5,
             maximum_font_blur: float = 2.0,
@@ -99,6 +102,22 @@ class TextOverlayDataset(Dataset):
         If false (default), will use ImageFont.Layout.RAQM for performing font layout.  This is slightly lower but
         enables non-English sentences.  If your text is solely English (LTR, Ascii, etc), you may see slightly better
         performance by setting this to 'false'.
+
+        :param float maximum_font_translation_percent:
+        A value between 0 and 1 which indicates how much the text will move inside the image on which it's composited.
+        A value of 0.0 (default) means the text will always be displayed exactly centered.  A value of 1.0 means the
+        text may be moved all the way to the outer edge of the image.
+
+        :param float maximum_font_rotation_percent:
+        A value between 0 and 1 which indicates how much the text can be rotated about its center before being
+        blitted.  WARNING: nonzero values, while currently supported, may cause the font to be cut off at image bounds.
+        A value of 0.0 (default) means the text will always be displayed exactly horizontally.
+        A value of 1.0 means the text may be rotated upside down.
+
+        :param float maximum_font_quad_distortion_percent:
+        A value between 0 and 1 which signifies the maximum allowable affine distortion.  At 0.0 (default), there is no
+        affine distortion.  At 1.0, the font could theoretically be stretched to extremely odd proportions.  The text
+        box will never be contracted.
         """
         super(TextOverlayDataset, self).__init__()
 
@@ -137,6 +156,10 @@ class TextOverlayDataset(Dataset):
         self.layout = ImageFont.LAYOUT_RAQM
         if only_english_support:
             self.layout = ImageFont.LAYOUT_BASIC
+
+        self.maximum_font_translation_percent = maximum_font_translation_percent
+        self.maximum_font_rotation_percent = maximum_font_rotation_percent
+        self.maximum_font_quad_distortion_percent = maximum_font_quad_distortion_percent
 
     def __len__(self):
         if self.randomize_text:
@@ -234,9 +257,6 @@ class TextOverlayDataset(Dataset):
             text: str,
             width: int,
             height: int,
-            max_translation_percent: float = 0.0,
-            max_rotation_percent: float = 0.0,
-            max_quad_distortion_percent: float = 0.0,
     ) -> Tuple[bool, Image.Image, numpy.ndarray]:
         """Move the rasterized text around, keeping all corners inside the width/height.
         Returns success/failure, the image, and the points on the axis-aligned bounding box as a 4x3 array.
@@ -253,14 +273,17 @@ class TextOverlayDataset(Dataset):
         aabb = bbox_to_aabb(*text_bbox)
 
         # If there are no translation or rotation operations, save the compute and return early.
-        if abs(max_rotation_percent) < 1e-6 \
-                and abs(max_translation_percent) < 1e-6 \
-                and abs(max_quad_distortion_percent) < 1e-6:
+        if abs(self.maximum_font_translation_percent) < 1e-6 \
+                and abs(self.maximum_font_rotation_percent) < 1e-6 \
+                and abs(self.maximum_font_quad_distortion_percent) < 1e-6:
             return success, text_image_mask, aabb
 
-        if max_rotation_percent > 0.0:
+        if self.maximum_font_rotation_percent > 0.0:
             # TODO: We need to call the method in bbox utils to find the actual max percentage.
-            rotation = random.uniform(-math.pi*max_rotation_percent, math.pi*max_rotation_percent)
+            rotation = random.uniform(
+                -math.pi*self.maximum_font_rotation_percent,
+                math.pi*self.maximum_font_rotation_percent
+            )
             # angle_limits = self._compute_min_max_text_angle(text_bbox, width, height)
             # if len(angle_limits) > 0:
             #     # This isn't quite a fair sampling.
@@ -274,7 +297,7 @@ class TextOverlayDataset(Dataset):
         # Prep translation:
         dx = 0
         dy = 0
-        if max_translation_percent > 0:
+        if self.maximum_font_translation_percent > 0:
             text_bbox = aabb_to_bbox(aabb)
             # Text bbox is, coincidentally, the amount we can jitter the text left/right and top/bottom.
             # JC: Variable name choice: Slop?  Play?  Tolerance?
@@ -283,12 +306,12 @@ class TextOverlayDataset(Dataset):
             max_right_movement = width - int(text_bbox[2])
             max_down_movement = height - int(text_bbox[3])
             dx = random.randrange(
-                int(max_translation_percent * max_left_movement),
-                int(max_translation_percent * max_right_movement)
+                int(self.maximum_font_translation_percent * max_left_movement),
+                int(self.maximum_font_translation_percent * max_right_movement)
             )
             dy = random.randrange(
-                int(max_translation_percent * max_up_movement),
-                int(max_translation_percent * max_down_movement)
+                int(self.maximum_font_translation_percent * max_up_movement),
+                int(self.maximum_font_translation_percent * max_down_movement)
             )
         # Translate by this amount.
         aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
@@ -303,7 +326,7 @@ class TextOverlayDataset(Dataset):
             [0, height, 1]
         ])
 
-        if max_quad_distortion_percent > 0.0:
+        if self.maximum_font_quad_distortion_percent > 0.0:
             internal_external_matching = find_lowest_cost_assignment(aabb, image_bounding_box)
             # For each edge in the aabb, move it as far as the respective corner.
             for from_point_index in range(0, 4):
@@ -312,8 +335,8 @@ class TextOverlayDataset(Dataset):
                 end_x = image_bounding_box[to_point_index, 0]
                 start_y = aabb[from_point_index, 1]
                 end_y = image_bounding_box[to_point_index, 1]
-                delta_x = (random.randrange(0, end_x - start_x)*max_rotation_percent) + start_x
-                delta_y = (random.randrange(0, end_y - start_y)*max_rotation_percent) + start_y
+                delta_x = (random.randrange(0, end_x - start_x)*self.maximum_font_quad_distortion_percent) + start_x
+                delta_y = (random.randrange(0, end_y - start_y)*self.maximum_font_quad_distortion_percent) + start_y
                 aabb[from_point_index, 0] += delta_x
                 aabb[from_point_index, 1] += delta_y
         
