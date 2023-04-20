@@ -1,1 +1,1 @@
-from text_overlay_dataset import TextOverlayDataset
+from .text_overlay_dataset import TextOverlayDataset

@@ -13,9 +13,8 @@ import random
 import unittest
 
 from PIL import Image
-from torchvision.datasets import FakeData
 
-from src.TextOverlayDataset.text_overlay_dataset import TextOverlayDataset
+from src.TextOverlayDataset import TextOverlayDataset
 
 
 class TestTextOverlayDataset(unittest.TestCase):
