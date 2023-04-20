@@ -15,7 +15,7 @@ from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision.transforms.functional import to_tensor, to_pil_image
 
-from .bounding_box_tools import aabb_to_bbox, bbox_to_aabb, rotate_around_point
+from .bounding_box_tools import aabb_to_bbox, bbox_to_aabb, find_lowest_cost_assignment, rotate_around_point
 
 
 class TextOverlayDataset(Dataset):
@@ -225,8 +225,9 @@ class TextOverlayDataset(Dataset):
                 size_idx -= 1
         # If we're here, we've run out of retries.
         # Cannot fit the given text in the image.
-        # TODO: Raise exception OR return empty, depending on setting.
-        return False, None, None
+        if self.empty_string_on_truncation:
+            return False, None, None
+        raise ValueError(f"Text with length {len(text)} is too large to fit in the image with size {width}x{height} and empty_string_on_truncation is false.")
 
     def _generate_text_raster_advanced(
             self,
@@ -235,47 +236,40 @@ class TextOverlayDataset(Dataset):
             height: int,
             max_translation_percent: float = 0.0,
             max_rotation_percent: float = 0.0,
+            max_quad_distortion_percent: float = 0.0,
     ) -> Tuple[bool, Image.Image, numpy.ndarray]:
         """Move the rasterized text around, keeping all corners inside the width/height.
         Returns success/failure, the image, and the points on the axis-aligned bounding box as a 4x3 array.
-        If max_rotation_percent is zero and max_translation_percent is zero this is equivalent to the
-        _generate_text_raster_basic method and will behave similarly (except for returning aabb instead of bbox).
+        If max_*_percent is zero this is equivalent to the _generate_text_raster_basic method 
+        and will behave similarly (except for returning aabb instead of bbox).
         """
         success, text_image_mask, text_bbox = self._generate_text_raster_basic(text, width, height)
         if not success:
             # JC: It would be nice to keep this signature in sync with the _basic version.  Does it help to enforce it
             # here, or should we return False, None, None?
-            return success, text_image_mask, text_bbox
+            return False, None, None
         assert text_image_mask.mode == 'L'
 
         aabb = bbox_to_aabb(*text_bbox)
 
         # If there are no translation or rotation operations, save the compute and return early.
-        if abs(max_rotation_percent) < 1e-6 and abs(max_translation_percent) < 1e-6:
+        if abs(max_rotation_percent) < 1e-6 and abs(max_translation_percent) < 1e-6 and abs(max_quad_distortion_percent) < 1e-6:
             return success, text_image_mask, aabb
 
         if max_rotation_percent > 0.0:
-            min_angle, max_angle = self._compute_min_max_text_angle(text_bbox, width, height)
-            rotation = random.uniform(0, (max_angle-min_angle)*max_rotation_percent) + min_angle
+            # TODO: We need to call the method in bbox utils to find the actual max percentage.
+            rotation = random.uniform(-math.pi*max_rotation_percent, math.pi*max_rotation_percent)
+            # angle_limits = self._compute_min_max_text_angle(text_bbox, width, height)
+            # if len(angle_limits) > 0:
+            #     # This isn't quite a fair sampling.
+            #     min_angle, max_angle = random.choice(angle_limits)
+            #     rotation = random.uniform(0, (max_angle-min_angle)*max_rotation_percent) + min_angle
             aabb = rotate_around_point(aabb, rotation, width*0.5, height*0.5)
 
         # In theory it would be possible to do the translation and rotation in one matmul, but we don't know the limits
         # of the translation before we do the rotation.
         previous_bbox = text_bbox
         text_bbox = aabb_to_bbox(aabb)
-        # Some sanity checking.  Our compute method should have made sure that we can't rotate the quad past the edge.
-        in_bounds = \
-            0 <= text_bbox[0] <= width and \
-            0 <= text_bbox[1] <= height and \
-            0 <= text_bbox[2] <= width and \
-            0 <= text_bbox[3] <= height
-        if not in_bounds:
-            print(previous_bbox)
-            print(aabb)
-            print(text_bbox)
-            print(width)
-            print(height)
-        assert in_bounds
 
         # Prep translation:
         dx = 0
@@ -297,77 +291,31 @@ class TextOverlayDataset(Dataset):
             )
         # Translate by this amount.
         aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
-        # PIL expects the _source_ quad to map to the full width, not the target quad.  We can just invert the op.
-        inv_aabb = numpy.asarray([
+        image_bounding_box = numpy.asarray([
             [0, 0, 1],
             [width, 0, 1],
             [width, height, 1],
-            [0, height, 1],
-        ]) - aabb
+            [0, height, 1]
+        ])
+
+        # Quad distortion means taking each of the points around axis-aligned bounding box and moving it as far as the nearest corner.
+        if max_quad_distortion_percent > 0.0:
+            internal_external_matching = find_lowest_cost_assignment(aabb, image_bounding_box)
+            # For each edge in the aabb, move it as far as the respective corner.
+            for from_point_idx in range(0, 4):
+                to_point_index = internal_external_matching[from_point_index]
+                max_dx = random.randrange(aabb[from_point_index, 0], image_bounding_box[to_point_index, 0])
+                max_dy = random.randrange(aabb[from_point_index, 1], image_bounding_box[to_point_index, 1])
+            # TODO: Start here.
+        
+        # PIL expects the _source_ quad to map to the full width, not the target quad.  We can just invert the op.
+        inv_aabb = image_bounding_box - aabb
         # This one-line magic converts our 2D array of [[x, y], [x, y], ...] to a list of [x, y, x, y, ...]
         quad = inv_aabb[:, :2].reshape(1, -1)[0]
         #transform = ImageTransform.QuadTransform(quad)  # Perhaps outdated?
         text_image_mask = text_image_mask.transform(text_image_mask.size, Image.QUAD, quad)
 
         return True, text_image_mask, aabb
-
-    def _compute_min_max_text_angle(
-            self,
-            text_bbox: Tuple[int, int, int, int],
-            image_width: int,
-            image_height: int
-    ) -> Tuple[float, float]:
-        """
-        Compute the maximum rotation and translation that we can apply to this block of text, assuming the pivot point
-        is the center of the text bounding box.
-
-        Explanation of this function:
-        There's a little basic trig in here.  I think there's a more optimal way to determine this value, but it
-        requires a better mind.
-
-        Start by moving the image_width to the left so that the rotation axis coincides with the center of whatever
-        space is left over.
-
-        ```
-        +------ Width_img / 2 ----------+
-        |                               |
-        +-- Width_txt/2 ----(A)       Height_img/2
-        |                    |          |
-        | Theta_txt    Height_txt/2     |
-        +--------------------+----------+
-        ```
-
-        The point A is the top-right corner of the rectangle defined by the text.
-        We want to ensure that A is below height_img/2 and to the left of width_img/2.
-        Because the rectangle is balanced and symmetric, we ensure that the other corners are inside the rect, too.
-        Theta_txt refers to the rotation of the whole text box and starts at zero.
-        Theta_a (not labeled) is the angle of A when Theta_txt is zero.  (A.k.a., the starting angle of point A.)
-        Theta_a = atan(height_txt/2 / width_txt/2), which simplifies to atan(height_txt/width_txt).
-        A moves to the right and reaches max when Theta_txt hits -Theta_A.
-        A moves up and reaches a max when Theta_A is pi/2 (90), so a minx/maxy at Theta_txt + Theta_a = pi/2.
-        We have two cases to check for A_x and A_y.  If A_x is less than or equal to Width_img/2 at max and A_y is less
-        than or equal to Height_img/2, we have no constraint on the rotation.
-        :param text_bbox: The [left, top, right, bottom] of the text. Assumed to be centered at the box's center.
-        :param image_width: The full width of the enclosing image.
-        :param image_height: The full height of the enclosing image.
-        :return Tuple[float, float]: The minimum and maximum angles or (0, 2*pi) if there is no limit.
-        """
-        text_left, text_top, text_right, text_bottom = text_bbox
-        text_halfwidth = abs(text_right - text_left) * 0.5
-        text_halfheight = abs(text_top - text_bottom) * 0.5
-        text_radius = math.sqrt(text_halfwidth**2 + text_halfheight**2)
-        angle_pa = math.atan2(text_halfheight, text_halfwidth)  # The 0.5 cancels in atan(dy*0.5 / dx*0.5).
-        min_angle = 0.0
-        max_angle = 2.0*math.pi
-        cos_min_angle = image_width*0.5 / text_radius
-        sin_max_angle = image_height*0.5 / text_radius
-        if -1 < cos_min_angle < 1:
-            # We are constrained.  :(
-            min_angle = math.acos(cos_min_angle) - angle_pa
-        if -1 < sin_max_angle < 1:
-            # Constrained by ceiling.
-            max_angle = math.asin(sin_max_angle) - angle_pa
-        return min_angle, max_angle
 
     def _generate_image_mask_pair(self, index: int) -> Tuple[Image.Image, str, Image.Image, numpy.ndarray]:
         """
