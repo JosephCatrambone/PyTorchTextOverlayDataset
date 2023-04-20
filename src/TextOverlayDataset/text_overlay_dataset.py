@@ -1,5 +1,5 @@
 """
-text_image_dataset.py
+text_overlay_dataset.py
 """
 import math
 import os

@@ -15,7 +15,7 @@ import unittest
 from PIL import Image
 from torchvision.datasets import FakeData
 
-from src.TextOverlayDataset.text_image_dataset import TextOverlayDataset
+from src.TextOverlayDataset.text_overlay_dataset import TextOverlayDataset
 
 
 class TestTextOverlayDataset(unittest.TestCase):
