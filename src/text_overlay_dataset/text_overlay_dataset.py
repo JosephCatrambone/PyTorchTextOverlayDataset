@@ -15,7 +15,7 @@ from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision.transforms.functional import to_tensor, to_pil_image
 
-from bounding_box_tools import aabb_to_bbox, bbox_to_aabb, find_lowest_cost_assignment, rotate_around_point
+from .bounding_box_tools import aabb_to_bbox, bbox_to_aabb, find_lowest_cost_assignment, rotate_around_point
 
 
 class TextOverlayDataset(Dataset):
