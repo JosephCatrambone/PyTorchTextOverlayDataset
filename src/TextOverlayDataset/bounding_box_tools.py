@@ -9,22 +9,24 @@ def aabb_to_bbox(aabb: numpy.generic) -> Tuple[float, float, float, float]:
     """Convert an axis-aligned bounding box to a grid-normal bounding box.
     ASSUMES DOWN IS +Y!  0 is the top!
     Also assumes +x is right, which one would hope is uncontroversial, but stranger things have happened.
-    The winding order of this array is important, as it matches with what PIL's Quad transform expects.
-    We start in the upper left and go counter-clockwise.
+    The winding order of the AABB matrix is important, as it matches with what PIL's Quad transform expects.
+    We start in the bottom left and go counter-clockwise.
     :return float, float, float, float: left, top, right, bottom
     """
-    left, top = aabb[:, :2].min(axis=0)
-    right, bottom = aabb[:, :2].max(axis=0)
+    left = aabb[0,0]
+    right = aabb[1,0]
+    top = aabb[0,2]
+    bottom = aabb[0,1]
     return left, top, right, bottom
 
 
 def bbox_to_aabb(left: float, top: float, right: float, bottom: float) -> numpy.ndarray:
-    """Return a 4x3 augmented matrix."""
+    """Return a 4x3 augmented matrix starting in the bottom left and going counter-clockwise."""
     return numpy.asarray([
-        [left, top, 1.0],
-        [right, top, 1.0],
         [left, bottom, 1.0],
         [right, bottom, 1.0],
+        [right, top, 1.0],
+        [left, top, 1.0],
     ])
 
 
