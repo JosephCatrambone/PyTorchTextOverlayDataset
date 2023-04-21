@@ -48,8 +48,8 @@ class TextOverlayDataset(Dataset):
     ):
         """Generate a new TextOverlayMappingDataset from an image dataset, text, and set of fonts.
 
-        text_overlay_dataset will attempt to dynamically generate and return triplets of composited text images, text,
-        and text raster.
+        text_overlay_dataset will attempt to dynamically generate and return quadruplets of composited text images,
+        text, text raster, and axis-aligned bounding box coordinates.  (Counter-clockwise wrapping.)
 
         Parameters
         ----------
