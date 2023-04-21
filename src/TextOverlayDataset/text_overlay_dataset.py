@@ -15,7 +15,7 @@ from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision.transforms.functional import to_tensor, to_pil_image
 
-from .bounding_box_tools import aabb_to_bbox, bbox_to_aabb, find_lowest_cost_assignment, rotate_around_point
+from bounding_box_tools import aabb_to_bbox, bbox_to_aabb, find_lowest_cost_assignment, rotate_around_point
 
 
 class TextOverlayDataset(Dataset):
@@ -223,7 +223,6 @@ class TextOverlayDataset(Dataset):
                     # On Windows the TrueType system keeps fonts open until the TTF object goes out of scope.  This caps
                     # the number of open fonts to 512 and can lead to OSErrors on load.  We get around this by copying
                     # the font into memory first.
-                    print(font_choice)
                     with open(font_choice, 'rb') as fin:
                         buffer = BytesIO()
                         buffer.write(fin.read())
@@ -271,6 +270,7 @@ class TextOverlayDataset(Dataset):
         assert text_image_mask.mode == 'L'
 
         aabb = bbox_to_aabb(*text_bbox)
+        start_aabb = aabb.copy()
 
         # If there are no translation or rotation operations, save the compute and return early.
         if abs(self.maximum_font_translation_percent) < 1e-6 \
@@ -294,39 +294,35 @@ class TextOverlayDataset(Dataset):
         # In theory it would be possible to do the translation and rotation in one matmul, but we don't know the limits
         # of the translation before we do the rotation.
 
-        # Prep translation:
-        dx = 0
-        dy = 0
         if self.maximum_font_translation_percent > 0:
             text_bbox = aabb_to_bbox(aabb)
             # Text bbox is, coincidentally, the amount we can jitter the text left/right and top/bottom.
             # JC: Variable name choice: Slop?  Play?  Tolerance?
             max_left_movement = -int(text_bbox[0])
-            max_up_movement = -int(text_bbox[1])
             max_right_movement = width - int(text_bbox[2])
+            max_up_movement = -int(text_bbox[1])
             max_down_movement = height - int(text_bbox[3])
-            dx = random.randrange(
-                int(self.maximum_font_translation_percent * max_left_movement),
-                int(self.maximum_font_translation_percent * max_right_movement)
-            )
-            dy = random.randrange(
-                int(self.maximum_font_translation_percent * max_up_movement),
-                int(self.maximum_font_translation_percent * max_down_movement)
-            )
-        # Translate by this amount.
-        aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
+            dx = random.randrange(int(max_left_movement), int(max_right_movement))*self.maximum_font_translation_percent
+            dy = random.randrange(int(max_up_movement), int(max_down_movement))*self.maximum_font_translation_percent
+            # Translate by this amount.
+            aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
 
-        # Ordering of this depends on the PIL Quad Transform:
         # Quad distortion means taking each of the points around axis-aligned bounding box and moving it at most up to
         # the nearest corner.
+
+        # We are computing this outside of the quad_distortion code because we'll reuse it in a bit.
+        # Ordering of this depends on the PIL Quad Transform:
         image_bounding_box = numpy.asarray([
             [0, 0, 1],
-            [width, 0, 1],
+            [0, height, 1],
             [width, height, 1],
-            [0, height, 1]
+            [width, 0, 1],
         ])
 
         if self.maximum_font_quad_distortion_percent > 0.0:
+            # If we were to pass the AABB to the quad transform, PIL would transform the text to fill the image.
+            # If we were to pass teh image_bounding_box to quad transform, the image would be unchanged.
+            # We want the text somewhere between the current position and image-filling.
             internal_external_matching = find_lowest_cost_assignment(aabb, image_bounding_box)
             # For each edge in the aabb, move it as far as the respective corner.
             for from_point_index in range(0, 4):
@@ -335,15 +331,19 @@ class TextOverlayDataset(Dataset):
                 end_x = image_bounding_box[to_point_index, 0]
                 start_y = aabb[from_point_index, 1]
                 end_y = image_bounding_box[to_point_index, 1]
-                delta_x = (random.randrange(0, end_x - start_x)*self.maximum_font_quad_distortion_percent) + start_x
-                delta_y = (random.randrange(0, end_y - start_y)*self.maximum_font_quad_distortion_percent) + start_y
+                delta_x = random.random() * (end_x - start_x) * self.maximum_font_quad_distortion_percent + start_x
+                delta_y = random.random() * (end_y - start_y) * self.maximum_font_quad_distortion_percent + start_y
                 aabb[from_point_index, 0] += delta_x
                 aabb[from_point_index, 1] += delta_y
-        
-        # PIL expects the _source_ quad to map to the full width, not the target quad.  We can just invert the op.
-        inv_aabb = image_bounding_box - aabb
+
+        # Right now AABB describes the theoretical position of the text in the image.  We want to translate from our
+        # nice centered, aligned text mask to the distorted quad in the image.  This requires us to compute the
+        # transform from start_aabb to aabb, then apply it to image_bounding_box
+        # A (4x3) * X = B (4x3)
+        transform = numpy.linalg.lstsq(start_aabb, aabb, rcond=None)[0]
+        inv_transform = numpy.linalg.pinv(transform)
         # This one-line magic converts our 2D array of [[x, y], [x, y], ...] to a list of [x, y, x, y, ...]
-        quad = inv_aabb[:, :2].reshape(1, -1)[0]
+        quad = (image_bounding_box @ inv_transform)[:, :2].reshape(1, -1)[0]
         #transform = ImageTransform.QuadTransform(quad)  # Perhaps outdated?
         text_image_mask = text_image_mask.transform(text_image_mask.size, Image.QUAD, quad)
 

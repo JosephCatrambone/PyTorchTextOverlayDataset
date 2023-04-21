@@ -11,6 +11,12 @@ from src.TextOverlayDataset.bounding_box_tools import *
 
 
 class TestBoundingBoxTools(unittest.TestCase):
+    def test_aabb_round_trip(self):
+        left, top, right, bottom = 1.0, 2.0, 3.0, 4.0
+        aabb = bbox_to_aabb(left, top, right, bottom)
+        bbox = aabb_to_bbox(aabb)
+        self.assertEqual(bbox, (left, top, right, bottom))
+
     def test_aabb_to_bbox(self):
         wonky_quad = numpy.asarray([
             [-10, -5, 1],
