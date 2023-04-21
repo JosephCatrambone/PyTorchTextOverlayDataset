@@ -42,9 +42,9 @@ class TextOverlayDataset(Dataset):
             maximum_font_translation_percent: float = 0.0,
             maximum_font_rotation_percent: float = 0.0,
             maximum_font_quad_distortion_percent: float = 0.0,
+            maximum_font_blur: float = 0.0,
             # TODO: Unused!
             maximum_font_outline_size: int = 5,
-            maximum_font_blur: float = 2.0,
     ):
         """Generate a new TextOverlayMappingDataset from an image dataset, text, and set of fonts.
 
@@ -118,6 +118,10 @@ class TextOverlayDataset(Dataset):
         A value between 0 and 1 which signifies the maximum allowable affine distortion.  At 0.0 (default), there is no
         affine distortion.  At 1.0, the font could theoretically be stretched to extremely odd proportions.  The text
         box will never be contracted.
+
+        :param float maximum_font_blur:
+        A value for the maximum number of pixels to be used in blurring the font.  0 means blurring is disabled.  For
+        performance reasons, an optimized box blur is used rather than a gaussian blur.
         """
         super(TextOverlayDataset, self).__init__()
 
@@ -160,6 +164,7 @@ class TextOverlayDataset(Dataset):
         self.maximum_font_translation_percent = maximum_font_translation_percent
         self.maximum_font_rotation_percent = maximum_font_rotation_percent
         self.maximum_font_quad_distortion_percent = maximum_font_quad_distortion_percent
+        self.maximum_font_blur = maximum_font_blur
 
     def __len__(self):
         if self.randomize_text:
@@ -339,13 +344,24 @@ class TextOverlayDataset(Dataset):
         # Right now AABB describes the theoretical position of the text in the image.  We want to translate from our
         # nice centered, aligned text mask to the distorted quad in the image.  This requires us to compute the
         # transform from start_aabb to aabb, then apply it to image_bounding_box
-        # A (4x3) * X = B (4x3)
-        transform = numpy.linalg.lstsq(start_aabb, aabb, rcond=None)[0]
-        inv_transform = numpy.linalg.pinv(transform)
-        # This one-line magic converts our 2D array of [[x, y], [x, y], ...] to a list of [x, y, x, y, ...]
-        quad = (image_bounding_box @ inv_transform)[:, :2].reshape(1, -1)[0]
-        #transform = ImageTransform.QuadTransform(quad)  # Perhaps outdated?
-        text_image_mask = text_image_mask.transform(text_image_mask.size, Image.QUAD, quad)
+        try:
+            transform = numpy.linalg.lstsq(start_aabb, aabb, rcond=None)[0]
+            inv_transform = numpy.linalg.pinv(transform)
+            # This one-line magic converts our 2D array of [[x, y], [x, y], ...] to a list of [x, y, x, y, ...]
+            quad = (image_bounding_box @ inv_transform)[:, :2].reshape(1, -1)[0]
+            #transform = ImageTransform.QuadTransform(quad)  # Perhaps outdated?
+            text_image_mask = text_image_mask.transform(text_image_mask.size, Image.QUAD, quad)
+        except numpy.linalg.LinAlgError:
+            # Drop this exception.  Once in a while we can do an identity transform.
+            # It's exceedingly rare because all rotations and translations should be linear and, thus, invertible.
+            pass
+
+        # Perform a blur.
+        # At zero, the boxblur is a noop, but we can still save ourselves a call to random.
+        if self.maximum_font_blur > 0:
+            # Prevent a blur that's larger than the text itself.
+            max_blur = min(self.maximum_font_blur, abs(text_bbox[1]-text_bbox[3]))
+            text_image_mask = text_image_mask.filter(ImageFilter.BoxBlur(radius=max_blur*random.random()))
 
         return True, text_image_mask, aabb
 
