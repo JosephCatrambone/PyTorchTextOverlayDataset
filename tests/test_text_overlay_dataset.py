@@ -14,7 +14,7 @@ import unittest
 
 from PIL import Image
 
-from src.TextOverlayDataset import TextOverlayDataset
+from src.text_overlay_dataset import TextOverlayDataset
 
 
 class TestTextOverlayDataset(unittest.TestCase):

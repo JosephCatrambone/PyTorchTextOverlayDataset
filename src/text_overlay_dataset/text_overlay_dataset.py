@@ -20,7 +20,7 @@ from bounding_box_tools import aabb_to_bbox, bbox_to_aabb, find_lowest_cost_assi
 
 class TextOverlayDataset(Dataset):
     """
-    TextOverlayDataset combines an image dataset and a text dataset (or collection of strings).
+    text_overlay_dataset combines an image dataset and a text dataset (or collection of strings).
     The image dataset should return images that can be converted to RGB.
     """
     def __init__(
@@ -48,7 +48,7 @@ class TextOverlayDataset(Dataset):
     ):
         """Generate a new TextOverlayMappingDataset from an image dataset, text, and set of fonts.
 
-        TextOverlayDataset will attempt to dynamically generate and return triplets of composited text images, text,
+        text_overlay_dataset will attempt to dynamically generate and return triplets of composited text images, text,
         and text raster.
 
         Parameters

@@ -7,7 +7,7 @@ import unittest
 
 import numpy
 
-from src.TextOverlayDataset.bounding_box_tools import *
+from src.text_overlay_dataset.bounding_box_tools import *
 
 
 class TestBoundingBoxTools(unittest.TestCase):
