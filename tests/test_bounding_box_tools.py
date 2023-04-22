@@ -61,46 +61,35 @@ class TestBoundingBoxTools(unittest.TestCase):
 
     def test_compute_min_max_text_angle_unbounded(self):
         """Verify that a max and min angles of a free-spinning block in a rectangle are properly calculated."""
-        image_width = 100
-        image_height = 50
-        text_width = 40
-        text_height = 20
         # This text box can spin freely in the image rectangle.
-
-        min_angle, max_angle = compute_max_rect_in_rect_rotation(
-            pivot=(0.0, 0.0),
-            inner_rectangle=(-text_width//2, -text_height//2, text_width//2, text_height//2),
-            outer_rectangle=(-image_width//2, -image_height//2, image_width//2, image_height//2)
+        limits = fast_conservative_theta_range(
+            inner_box_points=bbox_to_aabb(100, 100, 300, 200),  # 200 wide, 100 tall, centered at about 200, 150
+            outer_box_width=500,
+            outer_box_height=400
         )
-        self.assertLess(min_angle, 1e-6, "Min angle for a free-spinning text block should be near zero.")
-        self.assertGreater(max_angle, 6.28, "Max angle for a free-spinning text block should be 2*PI.")
+        self.assertTrue(limits is not None)
+        min_angle, max_angle = limits
+        self.assertAlmostEqual(min_angle, 0.0, 6, "Min angle for a free-spinning text block should be near zero.")
+        self.assertAlmostEqual(max_angle, math.pi/2.0, 6, "Max angle for a free-spinning text block should be PI/2.")
 
     def test_compute_min_max_text_angle_bounded(self):
         """Verify that if a block of text would not fit in a rectangle at certain rotations we demark them."""
-        # Generate an image that's 10 units wide and almost 1 unit tall.
-        # Generate a text block that's 2 units wide and 0 units tall.
-        # It's basically a horizontal paddle that will sit upright, like a throttle mechanism.
-        # The text block will hit when sin(theta) = 1, which should be 90.
-        min_angle, max_angle = ds._compute_min_max_text_angle([-1, 0, 1, 0], 10.0, 1.0-0.000001)
-        print(min_angle)
-        print(max_angle)
-
-        # Anecdotal case:
-        image_rect_half_size = [200, 100]  # Enclosing image is twice this width and twice this height.
-        text_rect_half_size = [199, 99]  # Almost touching the edge.
-        min_angle, max_angle = ds._compute_min_max_text_angle(
-            (
-                image_rect_half_size[0] - text_rect_half_size[0],  # Left
-                image_rect_half_size[1] - text_rect_half_size[1],  # Top
-                image_rect_half_size[0] + text_rect_half_size[0],  # Right
-                image_rect_half_size[1] + text_rect_half_size[1],  # Bottom
-            ),
-            image_rect_half_size[0]*2,
-            image_rect_half_size[1]*2
-        )
-
-        self.assertLess(abs(min_angle - -0.010205872253258474), 1e-6, "Min angle for constrained square is incorrect.")
-        self.assertLess(abs(max_angle - 0.005031443897310306), 1e-6, "Max angle for a constrained square is incorrect.")
+        # We expect to bonk the top, so there's a max but no min.
+        box_width = 200.0 / 2.0
+        box_height = 0.0 / 2.0
+        box_center = numpy.asarray([1000.0, 1.0])  # X, Y
+        image_size = numpy.asarray([5000.0, 2.0])  # Super wide, but not tall.
+        aabb = numpy.asarray([
+            [box_center[0] - box_width, box_center[1] - box_height, 1],
+            [box_center[0] - box_width, box_center[1] + box_height, 1],
+            [box_center[0] + box_width, box_center[1] + box_height, 1],
+            [box_center[0] + box_width, box_center[1] - box_height, 1],
+        ])
+        limits = fast_conservative_theta_range(aabb, image_size[0], image_size[1])
+        self.assertAlmostEqual(limits[0], 0.0, 5, "Lower limit isn't calculated correctly.")
+        self.assertAlmostEqual(limits[1], 0.010000166674167114, 5, "Upper limit isn't calculated correctly.")
+        new_pts = rotate_around_point(aabb, limits[1], box_center[0], box_center[1])
+        self.assertAlmostEqual(new_pts.max(axis=0)[1], image_size[1], 5, "After rotation about max, no ceiling hit.")
 
 
 if __name__ == '__main__':

@@ -40,6 +40,6 @@ ds = TextOverlayDataset(
 ```
 
 ### TODO:
-- Add toggle to prefer larger fonts first?
+- ~~Add toggle to prefer larger fonts first?~~
 - Fix bounds checking on rotation so we don't put text off the edge of the image.
 - Add automatic line-breaking to fix text inside image areas.

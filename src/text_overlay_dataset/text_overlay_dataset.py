@@ -15,7 +15,13 @@ from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision.transforms.functional import to_tensor, to_pil_image
 
-from .bounding_box_tools import aabb_to_bbox, bbox_to_aabb, find_lowest_cost_assignment, rotate_around_point
+from .bounding_box_tools import (
+    aabb_to_bbox,
+    bbox_to_aabb,
+    fast_conservative_theta_range,
+    find_lowest_cost_assignment,
+    rotate_around_point,
+)
 
 
 class TextOverlayDataset(Dataset):
@@ -36,6 +42,7 @@ class TextOverlayDataset(Dataset):
             randomly_choose: str = "text",
             empty_string_on_truncation: bool = True,
             font_sizes: Optional[List[int]] = None,
+            prefer_larger_fonts: bool = False,
 
             only_english_support: bool = False,
 
@@ -98,6 +105,10 @@ class TextOverlayDataset(Dataset):
         A list of valid font sizes from which we can select.  If 'None' (default), will use [8, 10, 12, 16, 20, 24, 36,
         48, 72, 144].
 
+        :param bool prefer_larger_fonts:
+        If false (default) a font will be selected at random from the list of valid font sizes.  If true, will try to
+        use the largest font that fits inside an image.
+
         :param bool only_english_support:
         If false (default), will use ImageFont.Layout.RAQM for performing font layout.  This is slightly lower but
         enables non-English sentences.  If your text is solely English (LTR, Ascii, etc), you may see slightly better
@@ -155,7 +166,10 @@ class TextOverlayDataset(Dataset):
         if font_sizes is None:
             self.font_sizes = [8, 10, 12, 16, 20, 24, 36, 48, 72, 144]
         else:
+            # MAINTAINER NOTE: Can we ensure this stays sorted without sorting every time?
             self.font_sizes = sorted(font_sizes)
+
+        self.prefer_larger_fonts = prefer_larger_fonts
 
         self.layout = ImageFont.LAYOUT_RAQM
         if only_english_support:
@@ -218,7 +232,9 @@ class TextOverlayDataset(Dataset):
         while max_retries > 0:  # We check again at the tail of this function and may break out there instead.
             max_retries -= 1
             alignment = random.choice(["left", "center", "right"])
-            size_idx = random.randint(0, len(self.font_sizes)-1)  # We pick a random starting size for our font.
+            size_idx = len(self.font_sizes)-1  # Start with the biggest.
+            if not self.prefer_larger_fonts:
+                size_idx = random.randint(0, len(self.font_sizes)-1)  # We pick a random starting size for our font.
             font_size = self.font_sizes[size_idx]
             font_choice = random.choice(self.font_choices)
 
@@ -285,30 +301,26 @@ class TextOverlayDataset(Dataset):
 
         if self.maximum_font_rotation_percent > 0.0:
             # TODO: We need to call the method in bbox utils to find the actual max percentage.
-            rotation = random.uniform(
-                -math.pi*self.maximum_font_rotation_percent,
-                math.pi*self.maximum_font_rotation_percent
-            )
-            # angle_limits = self._compute_min_max_text_angle(text_bbox, width, height)
-            # if len(angle_limits) > 0:
-            #     # This isn't quite a fair sampling.
-            #     min_angle, max_angle = random.choice(angle_limits)
-            #     rotation = random.uniform(0, (max_angle-min_angle)*max_rotation_percent) + min_angle
-            aabb = rotate_around_point(aabb, rotation, width*0.5, height*0.5)
+            angle_limits = fast_conservative_theta_range(aabb, width, height)
+            if angle_limits is not None:
+                rotation = random.uniform(0, (angle_limits[1]-angle_limits[0])*self.maximum_font_rotation_percent) \
+                           + angle_limits[0]
+                aabb_midpoint = aabb.mean(axis=0)
+                aabb = rotate_around_point(aabb, rotation, aabb_midpoint[0], aabb_midpoint[1])
 
         # In theory it would be possible to do the translation and rotation in one matmul, but we don't know the limits
         # of the translation before we do the rotation.
 
         if self.maximum_font_translation_percent > 0:
-            text_bbox = aabb_to_bbox(aabb)
+            left, top, right, bottom = aabb_to_bbox(aabb)
             # Text bbox is, coincidentally, the amount we can jitter the text left/right and top/bottom.
             # JC: Variable name choice: Slop?  Play?  Tolerance?
-            max_left_movement = -int(text_bbox[0])
-            max_right_movement = width - int(text_bbox[2])
-            max_up_movement = -int(text_bbox[1])
-            max_down_movement = height - int(text_bbox[3])
-            dx = random.randrange(int(max_left_movement), int(max_right_movement))*self.maximum_font_translation_percent
-            dy = random.randrange(int(max_up_movement), int(max_down_movement))*self.maximum_font_translation_percent
+            left_movement = left * random.random()
+            right_movement = (width - right) * random.random()
+            up_movement = min(top, bottom) * random.random()
+            down_movement = (height - max(top, bottom)) * random.random()
+            dx = (right_movement - left_movement) * self.maximum_font_translation_percent
+            dy = (down_movement - up_movement) * self.maximum_font_translation_percent
             # Translate by this amount.
             aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
 

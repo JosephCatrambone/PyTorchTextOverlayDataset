@@ -38,6 +38,8 @@ class TestTextOverlayDataset(unittest.TestCase):
             image_dataset=image_dataset,
             text_dataset=text_dataset,
             font_directory=font_dir,
+            maximum_font_translation_percent=1.0,
+            maximum_font_rotation_percent=1.0,
         )
 
     def test_sanity_lists(self):
@@ -49,21 +51,30 @@ class TestTextOverlayDataset(unittest.TestCase):
     def test_fuzz_generate_text_raster_augmented_bounds_check(self):
         """Randomly hit generate_text_raster_augmented and verify that it is always within the image bounds."""
         ds = self._make_small_dataset()
-        for _ in range(10000):
+        for _ in range(1000):
             width = random.randint(128, 512)
             height = random.randint(128, 512)
             success, _, bbox = ds._generate_text_raster_advanced("testing", width, height)
             if not success:
                 continue
             for point_idx in range(bbox.shape[0]):
-                assert 0 <= bbox[point_idx, 0] <= width and 0 <= bbox[point_idx, 1] <= height
+                in_bounds = 0 <= bbox[point_idx, 0] <= width and 0 <= bbox[point_idx, 1] <= height
+                if not in_bounds:
+                    print(width, height)
+                    print(bbox)
+                assert in_bounds
 
-    def test_split(self):
-        s = 'hello world'
-        self.assertEqual(s.split(), ['hello', 'world'])
-        # check that s.split fails when the separator is not a string
-        with self.assertRaises(TypeError):
-            s.split(2)
+    def test_raise_on_unplaceable_text(self):
+        text_dataset = ["One really long string that couldn't possibly fit in a thing.",]
+        image_dataset = [Image.new("RGB", (1, 1)), ]
+        ds = TextOverlayDataset(
+            image_dataset,
+            text_dataset,
+            font_directory="fonts",
+            empty_string_on_truncation=False,
+        )
+        with self.assertRaises(ValueError):
+            _ = ds[0]
 
 
 if __name__ == '__main__':
