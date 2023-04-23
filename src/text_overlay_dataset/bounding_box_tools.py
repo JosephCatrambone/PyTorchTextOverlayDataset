@@ -257,7 +257,7 @@ def fast_conservative_theta_range(
         min_angle = start_theta - math.acos(outer_box_width / radius)
 
     if outer_box_height > radius:
-        max_angle = math.pi * 0.5
+        max_angle = math.pi
     else:
         max_angle = math.asin(outer_box_height / radius) - start_theta
     return min_angle, max_angle

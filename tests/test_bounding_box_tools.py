@@ -70,7 +70,7 @@ class TestBoundingBoxTools(unittest.TestCase):
         self.assertTrue(limits is not None)
         min_angle, max_angle = limits
         self.assertAlmostEqual(min_angle, 0.0, 6, "Min angle for a free-spinning text block should be near zero.")
-        self.assertAlmostEqual(max_angle, math.pi/2.0, 6, "Max angle for a free-spinning text block should be PI/2.")
+        self.assertAlmostEqual(max_angle, math.pi, 6, "Max angle for a free-spinning text block should be PI/2.")
 
     def test_compute_min_max_text_angle_bounded(self):
         """Verify that if a block of text would not fit in a rectangle at certain rotations we demark them."""
