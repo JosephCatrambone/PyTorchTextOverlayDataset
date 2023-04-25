@@ -45,7 +45,7 @@ class TestTextOverlayDataset(unittest.TestCase):
     def test_sanity_lists(self):
         """Verify we can run the happy path of instancing a dataset and pulling one example."""
         ds = self._make_small_dataset()
-        img = ds[0]
+        img, text, res = ds[0]
         self.assertTrue(img is not None, "Dataset generator yielded 'None'")
 
     def test_fuzz_generate_text_raster_augmented_bounds_check(self):
@@ -54,9 +54,10 @@ class TestTextOverlayDataset(unittest.TestCase):
         for _ in range(1000):
             width = random.randint(128, 512)
             height = random.randint(128, 512)
-            success, _, bbox = ds._generate_text_raster_advanced("testing", width, height)
-            if not success:
+            result = ds._generate_text_raster_advanced("testing", width, height)
+            if result is None:
                 continue
+            bbox = result.aabb
             for point_idx in range(bbox.shape[0]):
                 in_bounds = 0 <= bbox[point_idx, 0] <= width and 0 <= bbox[point_idx, 1] <= height
                 if not in_bounds:

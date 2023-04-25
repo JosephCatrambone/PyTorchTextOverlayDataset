@@ -4,6 +4,7 @@ text_overlay_dataset.py
 import math
 import os
 import random
+from dataclasses import dataclass, field
 from glob import glob
 from io import BytesIO
 from typing import List, Optional, Tuple, Union
@@ -22,6 +23,29 @@ from .bounding_box_tools import (
     find_lowest_cost_assignment,
     rotate_around_point,
 )
+
+
+@dataclass
+class TextOverlayExample:
+    image: Image.Image  # The composite image with text on top.
+    text: str
+    text_rasterization: Image.Image  # The 'image' of text
+    aabb: numpy.ndarray = field(default_factory=lambda: numpy.zeros((4, 2), dtype=float))
+    font_name: str = ""  # The name of the font used
+    font_size: int = 0  # The 'point size' of the font
+    blur: float = 0.0  # The amount of blur used in generation
+    rotation: float = 0.0  # The rotation of the text from center
+    translation: Tuple[float, float] = (0.0, 0.0)  # A tuple of dx, dy
+
+    @property
+    def bounding_box(self) -> Tuple[float, float, float, float]:
+        return aabb_to_bbox(self.aabb)
+
+    @bounding_box.setter
+    def bounding_box(self, value: Tuple[float, float, float, float]):
+        # TODO: Make sure that aabb is almost all zeros or the default value.
+        # We don't want to overwrite the default value by accident.
+        self.aabb = bbox_to_aabb(*value)
 
 
 class TextOverlayDataset(Dataset):
@@ -187,15 +211,14 @@ class TextOverlayDataset(Dataset):
             return len(self.text_dataset)
         return min([len(self.image_dataset), len(self.text_dataset)])
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> Tuple[Image.Image, str, TextOverlayExample]:
         """Given an index, yields a tuple of the following:
          - image (as a numpy array)
          - the text overlaid upon the image (string)
-         - the un-composited text (a text overlay as a numpy array)
-         - a numpy array with the four corners of the bounding box
+         - a dataclass with lots of details about the inner machinations (TextOverlayExample)
         """
-        composite, text, raster, bounding_box = self._generate_image_mask_pair(idx)
-        return composite, text, raster, bounding_box
+        result = self._generate_image_mask_pair(idx)
+        return result.image, result.text, result
 
     def get_image(self, idx):
         """Return either the image at position idx or a random image, depending on the value of 'randomly_chose'."""
@@ -203,7 +226,7 @@ class TextOverlayDataset(Dataset):
             return self.image_dataset[random.randint(0, len(self.image_dataset)-1)]
         return self.image_dataset[idx]
 
-    def get_text(self, idx):
+    def get_text(self, idx) -> str:
         """Return either the text at position idx or a random string, depending on the value of 'randomly_chose'."""
         if self.randomize_text:
             return self.text_dataset[random.randint(0, len(self.text_dataset)-1)]
@@ -215,13 +238,13 @@ class TextOverlayDataset(Dataset):
             width: int,
             height: int,
             max_retries: int = 10
-    ) -> Tuple[bool, Image.Image, Tuple[int, int, int, int]]:
+    ) -> Optional[TextOverlayExample]:
         """
         We will try to pick a font, layout the text, and then fit it into the image up to X times.
         :param text:
         :param width:
         :param height:
-        :return: A tuple of success/failure, a LUMA PIL image, and a bounding box of left, up, right, bottom.
+        :return: None on the failure to composite, otherwise a partially filled TextOverlayExample.
         """
         if self.loaded_fonts is None:
             self.loaded_fonts = dict()
@@ -264,12 +287,20 @@ class TextOverlayDataset(Dataset):
                 # We may have to recenter the text.
                 if text_width < width and text_height < height:
                     draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
-                    return True, canvas, (left, top, right, bottom)
+                    result = TextOverlayExample(
+                        image=None,
+                        text=text,
+                        text_rasterization=canvas,
+                        aabb=bbox_to_aabb(*text_bbox),
+                        font_name=font_choice,
+                        font_size=font_size,
+                    )
+                    return result
                 size_idx -= 1
         # If we're here, we've run out of retries.
         # Cannot fit the given text in the image.
         if self.empty_string_on_truncation:
-            return False, None, None
+            return None
         raise ValueError(f"Text with length {len(text)} is too large to fit in the image with size {width}x{height}.")
 
     def _generate_text_raster_advanced(
@@ -277,27 +308,29 @@ class TextOverlayDataset(Dataset):
             text: str,
             width: int,
             height: int,
-    ) -> Tuple[bool, Image.Image, numpy.ndarray]:
+    ) -> Optional[TextOverlayExample]:
         """Move the rasterized text around, keeping all corners inside the width/height.
         Returns success/failure, the image, and the points on the axis-aligned bounding box as a 4x3 array.
         If max_*_percent is zero this is equivalent to the _generate_text_raster_basic method 
         and will behave similarly (except for returning aabb instead of bbox).
         """
-        success, text_image_mask, text_bbox = self._generate_text_raster_basic(text, width, height)
-        if not success:
+        result = self._generate_text_raster_basic(text, width, height)
+        if result is None:
             # JC: It would be nice to keep this signature in sync with the _basic version.  Does it help to enforce it
             # here, or should we return False, None, None?
-            return False, None, None
-        assert text_image_mask.mode == 'L'
+            return None
+        assert result.text_rasterization.mode == 'L'
 
-        aabb = bbox_to_aabb(*text_bbox)
+        text_image_mask = result.text_rasterization
+        text_bbox = result.bounding_box
+        aabb = result.aabb
         start_aabb = aabb.copy()
 
         # If there are no translation or rotation operations, save the compute and return early.
         if abs(self.maximum_font_translation_percent) < 1e-6 \
                 and abs(self.maximum_font_rotation_percent) < 1e-6 \
                 and abs(self.maximum_font_quad_distortion_percent) < 1e-6:
-            return success, text_image_mask, aabb
+            return result
 
         if self.maximum_font_rotation_percent > 0.0:
             # TODO: We need to call the method in bbox utils to find the actual max percentage.
@@ -307,6 +340,7 @@ class TextOverlayDataset(Dataset):
                            + angle_limits[0]
                 aabb_midpoint = aabb.mean(axis=0)
                 aabb = rotate_around_point(aabb, rotation, aabb_midpoint[0], aabb_midpoint[1])
+                result.rotation = rotation
 
         # In theory it would be possible to do the translation and rotation in one matmul, but we don't know the limits
         # of the translation before we do the rotation.
@@ -323,6 +357,7 @@ class TextOverlayDataset(Dataset):
             dy = (down_movement - up_movement) * self.maximum_font_translation_percent
             # Translate by this amount.
             aabb += numpy.asarray([dx, dy, 0])  # Lean on broadcasting.
+            result.translation = (dx, dy)
 
         # Quad distortion means taking each of the points around axis-aligned bounding box and moving it at most up to
         # the nearest corner.
@@ -373,11 +408,15 @@ class TextOverlayDataset(Dataset):
         if self.maximum_font_blur > 0:
             # Prevent a blur that's larger than the text itself.
             max_blur = min(self.maximum_font_blur, abs(text_bbox[1]-text_bbox[3]))
-            text_image_mask = text_image_mask.filter(ImageFilter.BoxBlur(radius=max_blur*random.random()))
+            blur_amount = max_blur*random.random()
+            text_image_mask = text_image_mask.filter(ImageFilter.BoxBlur(radius=blur_amount))
+            result.blur = blur_amount
 
-        return True, text_image_mask, aabb
+        result.text_rasterization = text_image_mask
+        result.aabb = aabb
+        return result
 
-    def _generate_image_mask_pair(self, index: int) -> Tuple[Image.Image, str, Image.Image, numpy.ndarray]:
+    def _generate_image_mask_pair(self, index: int) -> Optional[TextOverlayExample]:
         """
         Generate a 4-tuple of composited image+text, the text, the text mask, and a numpy array of shape 4x2 with the
         bounding box corners.
@@ -388,7 +427,7 @@ class TextOverlayDataset(Dataset):
         - Text raster composition, where we composite the rasterized text in a nice color over the image.
 
         :param index:
-        :return Tuple[Image.Image, str, Image.Image, numpy.generic]:
+        :return TextOverlayExample:
         """
         img = self.get_image(index)
         text = self.get_text(index)
@@ -414,11 +453,15 @@ class TextOverlayDataset(Dataset):
             img_arr = numpy.array(img_pil)
 
         # Generate some random text:
-        success, text_image_mask, bbox = self._generate_text_raster_advanced(text, img_pil.width, img_pil.height)
+        result = self._generate_text_raster_advanced(text, img_pil.width, img_pil.height)
         # It's possible the text we tried to add could not be composited onto an image.
-        if not success:
+        if result is None:
             if self.empty_string_on_truncation:
-                return img_pil, "", Image.new('RGB')
+                return TextOverlayExample(
+                    image=img_pil,
+                    text="",
+                    text_rasterization=Image.new("L", img_pil.size),
+                )
 
         # Glorious hack to make a red mask:
         # red_channel = img_pil[0].point(lambda i: i < 100 and 255)
@@ -441,10 +484,11 @@ class TextOverlayDataset(Dataset):
         # Make a rectangle of this color and use the rasterized text as the alpha channel, then paste it onto pil_img.
         # TODO: Add noise to the color block?
         text_color_block = Image.new("RGB", (img_pil.width, img_pil.height), color=text_color)
-        text_color_block.putalpha(text_image_mask)
-        img_pil.paste(text_color_block, (0, 0), text_image_mask)
+        text_color_block.putalpha(result.text_rasterization)
+        img_pil.paste(text_color_block, (0, 0), result.text_rasterization)
+        result.image = img_pil
 
         # Maybe dilate the mask?
         #text_image_mask = text_image_mask.filter(ImageFilter.MaxFilter(self.random_text_mask_dilation))
 
-        return img_pil, text, text_image_mask, bbox
+        return result
