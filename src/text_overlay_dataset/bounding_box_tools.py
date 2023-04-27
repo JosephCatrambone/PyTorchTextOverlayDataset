@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple
 import numpy
 
 
-def aabb_to_bbox(aabb: numpy.generic) -> Tuple[float, float, float, float]:
+def aabb_to_bbox(aabb: numpy.ndarray) -> Tuple[float, float, float, float]:
     """Convert an axis-aligned bounding box to a grid-normal bounding box.
     ASSUMES DOWN IS +Y!  0 is the top!
     Also assumes +x is right, which one would hope is uncontroversial, but stranger things have happened.
