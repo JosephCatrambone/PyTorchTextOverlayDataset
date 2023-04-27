@@ -27,7 +27,6 @@ from .bounding_box_tools import (
 
 @dataclass
 class TextOverlayExample:
-    image: Image.Image  # The composite image with text on top.
     text: str
     text_rasterization: Image.Image  # The 'image' of text
     aabb: numpy.ndarray = field(default_factory=lambda: numpy.zeros((4, 2), dtype=float))
@@ -36,6 +35,43 @@ class TextOverlayExample:
     blur: float = 0.0  # The amount of blur used in generation
     rotation: float = 0.0  # The rotation of the text from center
     translation: Tuple[float, float] = (0.0, 0.0)  # A tuple of dx, dy
+    _image: Image.Image = None  # The composite image with text on top.
+
+    @property
+    def image(self):
+        return self._image
+
+    @image.setter
+    def image(self, new_image: Image.Image):
+        if self._image is None:
+            self._image = new_image
+            return  # Don't reconfigure anything else.
+        aabb_pct = self.aabb_percent
+        translation_pct = self.translation_percent
+        self._image = new_image
+        self.aabb_percent = aabb_pct
+        self.translation_percent = translation_pct
+
+    @property
+    def aabb_percent(self) -> numpy.ndarray:
+        """Get the axis-aligned bounding box with percentage rather than pixel units."""
+        return self.aabb[:, :2] / numpy.asarray([self.image.size[0], self.image.size[1]])
+
+    @aabb_percent.setter
+    def aabb_percent(self, value: numpy.ndarray):
+        """Convert the pixel values to our percentage.  Assumes the current image is the active one"""
+        scale = numpy.ones_like(value)
+        scale[:, 0] = float(self.image.size[0])
+        scale[:, 1] = float(self.image.size[1])
+        self.aabb = value * scale
+
+    @property
+    def translation_percent(self) -> Tuple[float, float]:
+        return float(self.translation[0] / self.image.size[0]), float(self.translation[1] / self.image.size[1])
+
+    @translation_percent.setter
+    def translation_percent(self, value: Tuple[float, float]):
+        self.translation = (value[0]*self.image.size[0], value[1]*self.image.size[1])
 
     @property
     def bounding_box(self) -> Tuple[float, float, float, float]:
@@ -288,11 +324,10 @@ class TextOverlayDataset(Dataset):
                 if text_width < width and text_height < height:
                     draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
                     result = TextOverlayExample(
-                        image=None,
                         text=text,
                         text_rasterization=canvas,
                         aabb=bbox_to_aabb(*text_bbox),
-                        font_name=font_choice,
+                        font_name=os.path.basename(font_choice),
                         font_size=font_size,
                     )
                     return result
@@ -457,11 +492,11 @@ class TextOverlayDataset(Dataset):
         # It's possible the text we tried to add could not be composited onto an image.
         if result is None:
             if self.empty_string_on_truncation:
-                return TextOverlayExample(
-                    image=img_pil,
+                res = TextOverlayExample(
                     text="",
                     text_rasterization=Image.new("L", img_pil.size),
                 )
+                res.image = img_pil
 
         # Glorious hack to make a red mask:
         # red_channel = img_pil[0].point(lambda i: i < 100 and 255)
