@@ -1,6 +1,6 @@
 [project]
 name = "text-overlay-dataset"
-version = "0.0.8"
+version = "0.0.10"
 authors = [
   { name="Joseph Catrambone", email="me@josephcatrambone.com" },
 ]
