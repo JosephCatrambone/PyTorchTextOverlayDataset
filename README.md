@@ -18,7 +18,14 @@ ds = TextOverlayDataset(
     fonts="<path to ttf dir>"
 )
 
-composite_image, text, text_raster, aabb = ds[0]
+composite_image, text, etc = ds[0]
+
+# composite_image is the 0th image with a randomly selected text.
+# text is the given text that was selected.
+# etc is an object with axis-aligned bounding box, font name, and so on.
+
+# If desired, one can specify `randomly_choose='image'` in the constructor
+# and text will be accessed sequentially with random images instead.
 ```
 
 ```python
@@ -76,4 +83,7 @@ ds = TextOverlayDataset(
 - ~~Add toggle to prefer larger fonts first?~~
 - ~~Fix bounds checking on rotation so we don't put text off the edge of the image.~~
 - Add automatic line-breaking to fix long text inside image areas.
-- Check for samling biases in the random generations.
+- Check for sampling biases in the random generations.
+- Support streaming datasets.
+- Verify RTL languages.
+- Verify Unicode line breaks and non-English fonts.
