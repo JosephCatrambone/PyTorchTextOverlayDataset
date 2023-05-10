@@ -79,6 +79,17 @@ ds = TextOverlayDataset(
 )
 ```
 
+```python
+# If your dataset has a lot of long strings with no line breaks, it might be worth considering setting 
+# 'long_text_behavior' to 'truncate_then_shrink' to avoid lots of null texts. 
+ds = TextOverlayDataset(
+    image_dataset = fake_image_dataset,
+    text_dataset = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!!!!!"],
+    font_directory = "fonts",
+    long_text_behavior = 'truncate_then_shrink',
+)
+```
+
 ### TODO:
 - ~~Add toggle to prefer larger fonts first?~~
 - ~~Fix bounds checking on rotation so we don't put text off the edge of the image.~~

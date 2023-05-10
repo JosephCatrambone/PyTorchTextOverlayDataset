@@ -72,7 +72,7 @@ class TestTextOverlayDataset(unittest.TestCase):
             image_dataset,
             text_dataset,
             font_directory="fonts",
-            empty_string_on_truncation=False,
+            long_text_behavior='exception',
         )
         with self.assertRaises(ValueError):
             _ = ds[0]

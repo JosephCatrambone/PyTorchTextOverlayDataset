@@ -89,6 +89,10 @@ class TextOverlayDataset(Dataset):
     text_overlay_dataset combines an image dataset and a text dataset (or collection of strings).
     The image dataset should return images that can be converted to RGB.
     """
+
+    RANDOM_DATASET_CHOICES = {'text', 'image'}
+    LONG_TEXT_BEHAVIOUR = {'empty', 'truncate_then_shrink', 'shrink_then_truncate', 'exception'}
+
     def __init__(
             self,
             image_dataset: Union[List[Image.Image], Dataset],
@@ -100,7 +104,7 @@ class TextOverlayDataset(Dataset):
             text_raster_transforms: Optional[List] = None,
 
             randomly_choose: str = "text",
-            empty_string_on_truncation: bool = True,
+            long_text_behavior: str = "exception",
             font_sizes: Optional[List[int]] = None,
             prefer_larger_fonts: bool = False,
 
@@ -117,9 +121,6 @@ class TextOverlayDataset(Dataset):
 
         text_overlay_dataset will attempt to dynamically generate and return quadruplets of composited text images,
         text, text raster, and axis-aligned bounding box coordinates.  (Counter-clockwise wrapping.)
-
-        Parameters
-        ----------
 
         :param Dataset | List[Image] image_dataset:
         A mappable PyTorch dataset OR a list of images.
@@ -149,17 +150,23 @@ class TextOverlayDataset(Dataset):
         :param str randomly_choose:
         If randomly_choose 'text' (default), this_dataset[i] will give the i-th item from the image dataset with a
         randomly selected item from the text dataset superimposed.  len(this) is then defined as the length of the image
-         dataset.
+        dataset.
         If randomly_choose 'image', then this_dataset[i] will give a random image with the i-th entry in the text
         dataset.  The length of this is will be defined as len(text_dataset).
         If randomly_chose is None, this_dataset[i] will return text[i] superimposed on image[i].  The length of the
         dataset will be min(image_dataset, text_dataset).
 
-        :param bool empty_string_on_truncation:
-        If true (default), when text cannot be written to an image in a way that is legible, either because the image
-        itself is too small to support a given string or a string is too large to be fit on any image (e.g., trying to
-        fit War and Peace on a 16x16 image), the generator will instead return an empty text and an empty image.
-        If this is false, will raise an exception.
+        :param str long_text_behavior:
+        How should the dataset behave when it encounters a string that's too long to fit on the given image?
+        Valid options include: 'exception', 'shrink_then_truncate', 'truncate_then_shrink', 'empty' (default).
+        `empty` (default) means if the text cannot fit in the image at the smallest font size, return the base image and
+        an empty string.  This is the fastest of the bunch and least error-prone.
+        `truncate_then_shrink` means that if the text cannot fit in the image at the randomly selected size, try
+        dropping the last character and rerun the fit.  In general, this is much faster than shrink_then_truncate for
+        strings without a lot of line breaks.
+        `shrink_then_truncate` means that if the text cannot fit in the image at the smallest font size, drop half of
+        the text and retry until it fits.  If the text reaches zero length and still can't fit, raises a ValueError.
+        `exception` means that if the text cannot fit in the image at the smallest font size, raise a ValueError.
 
         :param List[int] font_sizes:
         A list of valid font sizes from which we can select.  If 'None' (default), will use [8, 10, 12, 16, 20, 24, 36,
@@ -221,7 +228,10 @@ class TextOverlayDataset(Dataset):
         else:
             raise ValueError(f"Unrecognized value for 'randomly choose': {randomly_choose}")
 
-        self.empty_string_on_truncation = empty_string_on_truncation
+        self.long_text_behavior = long_text_behavior.lower()
+        if self.long_text_behavior not in TextOverlayDataset.LONG_TEXT_BEHAVIOUR:
+            raise ValueError(f"long_text_behavior must be one of the following:"
+                             f" {TextOverlayDataset.LONG_TEXT_BEHAVIOUR} -- got {long_text_behavior}")
 
         if font_sizes is None:
             self.font_sizes = [8, 10, 12, 16, 20, 24, 36, 48, 72, 144]
@@ -287,6 +297,7 @@ class TextOverlayDataset(Dataset):
 
         text_width = width + 1
         text_height = height + 1
+        start_text = text
 
         while max_retries > 0:  # We check again at the tail of this function and may break out there instead.
             max_retries -= 1
@@ -296,8 +307,9 @@ class TextOverlayDataset(Dataset):
                 size_idx = random.randint(0, len(self.font_sizes)-1)  # We pick a random starting size for our font.
             font_size = self.font_sizes[size_idx]
             font_choice = random.choice(self.font_choices)
+            text = start_text  # Restart from full text length, just in case we're truncating.
 
-            while (text_width > width or text_height > height) and size_idx >= 0:
+            while (text_width > width or text_height > height) and size_idx >= 0 and len(text) > 1:
                 if font_choice not in self.loaded_fonts:
                     # A note on this:
                     # On Windows the TrueType system keeps fonts open until the TTF object goes out of scope.  This caps
@@ -331,12 +343,27 @@ class TextOverlayDataset(Dataset):
                         font_size=font_size,
                     )
                     return result
-                size_idx -= 1
+                if self.long_text_behavior == 'truncate_then_shrink':
+                    text = text[:-2]  # Shrink by two letters.
+                    if len(text) < 1:
+                        text = start_text  # Reset to the full original string when we go down a font size.
+                        size_idx -= 1
+                elif self.long_text_behavior == 'shrink_then_truncate':
+                    size_idx -= 1
+                    if size_idx < 0:
+                        size_idx = random.randint(0, len(self.font_sizes)-1)  # Reset to a random font size.
+                        text = text[:-2]
+                else:
+                    # 'empty' or 'exception'.
+                    # For all of these we want to shrink first.
+                    size_idx -= 1
+
         # If we're here, we've run out of retries.
         # Cannot fit the given text in the image.
-        if self.empty_string_on_truncation:
+        if self.long_text_behavior == 'empty':
             return None
-        raise ValueError(f"Text with length {len(text)} is too large to fit in the image with size {width}x{height}.")
+        # elif self.long_text_behavior == 'exception' or one of the others.
+        raise ValueError(f"Text with length {len(text)} is too large to fit in the image of size {width}x{height}.")
 
     def _generate_text_raster_advanced(
             self,
