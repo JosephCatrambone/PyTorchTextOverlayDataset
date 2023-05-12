@@ -158,15 +158,16 @@ class TextOverlayDataset(Dataset):
 
         :param str long_text_behavior:
         How should the dataset behave when it encounters a string that's too long to fit on the given image?
-        Valid options include: 'exception', 'shrink_then_truncate', 'truncate_then_shrink', 'empty' (default).
-        `empty` (default) means if the text cannot fit in the image at the smallest font size, return the base image and
+        Valid options include: 'exception' (default), 'shrink_then_truncate', 'truncate_then_shrink', 'empty'.
+        `empty` means if the text cannot fit in the image at the smallest font size, return the base image and
         an empty string.  This is the fastest of the bunch and least error-prone.
         `truncate_then_shrink` means that if the text cannot fit in the image at the randomly selected size, try
         dropping the last character and rerun the fit.  In general, this is much faster than shrink_then_truncate for
         strings without a lot of line breaks.
         `shrink_then_truncate` means that if the text cannot fit in the image at the smallest font size, drop half of
         the text and retry until it fits.  If the text reaches zero length and still can't fit, raises a ValueError.
-        `exception` means that if the text cannot fit in the image at the smallest font size, raise a ValueError.
+        `exception` (default) means that if the text cannot fit in the image at the smallest font size, raise a
+        ValueError.
 
         :param List[int] font_sizes:
         A list of valid font sizes from which we can select.  If 'None' (default), will use [8, 10, 12, 16, 20, 24, 36,
@@ -518,12 +519,13 @@ class TextOverlayDataset(Dataset):
         result = self._generate_text_raster_advanced(text, img_pil.width, img_pil.height)
         # It's possible the text we tried to add could not be composited onto an image.
         if result is None:
-            if self.empty_string_on_truncation:
-                res = TextOverlayExample(
+            if self.long_text_behavior == 'empty':
+                result = TextOverlayExample(
                     text="",
                     text_rasterization=Image.new("L", img_pil.size),
                 )
-                res.image = img_pil
+                result.image = img_pil
+            # Else: we're raising an exception.
 
         # Glorious hack to make a red mask:
         # red_channel = img_pil[0].point(lambda i: i < 100 and 255)
