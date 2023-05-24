@@ -15,7 +15,7 @@ from PIL import Image
 ds = TextOverlayDataset(
     image_dataset = [Image.new("RGB", (256, 256)), ], 
     text_dataset = ["Hello", "World"], 
-    fonts="<path to ttf dir>"
+    font_directory="<path to ttf dir>"
 )
 
 composite_image, text, etc = ds[0]

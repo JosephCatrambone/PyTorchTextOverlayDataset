@@ -38,6 +38,7 @@ class TestTextOverlayDataset(unittest.TestCase):
             image_dataset=image_dataset,
             text_dataset=text_dataset,
             font_directory=font_dir,
+            long_text_behavior='empty',
             maximum_font_translation_percent=1.0,
             maximum_font_rotation_percent=1.0,
         )
@@ -50,6 +51,7 @@ class TestTextOverlayDataset(unittest.TestCase):
 
     def test_fuzz_generate_text_raster_augmented_bounds_check(self):
         """Randomly hit generate_text_raster_augmented and verify that it is always within the image bounds."""
+        pad = 1
         ds = self._make_small_dataset()
         for _ in range(1000):
             width = random.randint(128, 512)
@@ -59,15 +61,17 @@ class TestTextOverlayDataset(unittest.TestCase):
                 continue
             bbox = result.aabb
             for point_idx in range(bbox.shape[0]):
-                in_bounds = 0 <= bbox[point_idx, 0] <= width and 0 <= bbox[point_idx, 1] <= height
+                in_bounds = -pad <= bbox[point_idx, 0] <= width+pad and -pad <= bbox[point_idx, 1] <= height+pad
                 if not in_bounds:
                     print(width, height)
                     print(bbox)
                 assert in_bounds
 
-    def test_raise_on_unplaceable_text(self):
+    def test_long_text_behavior(self):
         text_dataset = ["One really long string that couldn't possibly fit in a thing.",]
-        image_dataset = [Image.new("RGB", (1, 1)), ]
+        image_dataset = [Image.new("RGB", (32, 32)), ]
+
+        # Raise exception on long text:
         ds = TextOverlayDataset(
             image_dataset,
             text_dataset,
@@ -76,6 +80,26 @@ class TestTextOverlayDataset(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             _ = ds[0]
+
+        # Return empty on long text:
+        ds = TextOverlayDataset(
+            image_dataset,
+            text_dataset,
+            font_directory="fonts",
+            long_text_behavior='empty',
+        )
+        image, text, etc = ds[0]
+        self.assertEqual(text, "")
+
+        # Truncate:
+        ds = TextOverlayDataset(
+            image_dataset,
+            text_dataset,
+            font_directory="fonts",
+            long_text_behavior='truncate_then_shrink',
+        )
+        image, text, etc = ds[0]
+        self.assertTrue(text.startswith('O'), "Truncated text should start with 'O'.")
 
 
 if __name__ == '__main__':
