@@ -547,9 +547,24 @@ class TextOverlayDataset(Dataset):
         text_color = f"#{text_color[0]:02X}{text_color[1]:02X}{text_color[2]:02X}"
         # Make a rectangle of this color and use the rasterized text as the alpha channel, then paste it onto pil_img.
         # TODO: Add noise to the color block?
+        # Apply whatever raster transforms we have.
+        # TODO: Should we do this on the 'L' raster or the RGB image?
         text_color_block = Image.new("RGB", (img_pil.width, img_pil.height), color=text_color)
+        if self.text_raster_transforms:
+            text_raster = result.text_rasterization
+            for trt in self.text_raster_transforms:
+                text_raster = trt(text_raster)
+            result.text_rasterization = text_raster
         text_color_block.putalpha(result.text_rasterization)
+
+        # Pre-final image:
         img_pil.paste(text_color_block, (0, 0), result.text_rasterization)
+
+        # Maybe apply transforms on the composited image.
+        if self.post_composite_transforms:
+            for tf in self.post_composite_transforms:
+                img_pil = trt(img_pil)
+        
         result.image = img_pil
 
         # Maybe dilate the mask?
