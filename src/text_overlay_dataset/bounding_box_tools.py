@@ -232,8 +232,8 @@ def fast_conservative_theta_range(
         return None
     # Center ABCD at the origin so we can find the 'top right' or 'bottom right'.  The farthest point.
     inner_box_points = inner_box_points[:, :2] - centerpoint
-    outer_box_width -= center_x
-    outer_box_height -= center_y
+    outer_box_width = min(outer_box_width - center_x, center_x)  # Worst-case scenario the inner box is right up against the edge.
+    outer_box_height = min(outer_box_height - center_y, center_y)  # Try and find the smallest distance to an edge.
     # Remember distance = sqrt(dx*dx + dy*dy).  We can do this in one step via numpy:
     magnitudes = (inner_box_points * inner_box_points).sum(axis=1) ** 0.5
     farthest_point_idx = numpy.argmax(magnitudes)
