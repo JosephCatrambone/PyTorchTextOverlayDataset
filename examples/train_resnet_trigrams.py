@@ -8,25 +8,33 @@ import os
 from typing import List, Optional
 
 import torch
+from PIL import Image
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets.fakedata import FakeData
-from torchvision.models import vit_b_16
+from torchvision.models import resnet50
 from torchvision.transforms import CenterCrop
 from torchvision.transforms.functional import pil_to_tensor
 from text_overlay_dataset import TextOverlayDataset
 from tqdm import tqdm
 
+try:
+	from torch.utils.tensorboard import SummaryWriter
+	writer = SummaryWriter("runs/train_resnet_trigrams")
+except ModuleNotFoundError:
+	print("tensorboard not found.  Ignoring TB writer.")
+	writer = None
+
 
 # logging
 config = dict(
 	run_name="Random Noise + Random Text",
-	transformer_output_dim = 1024,
-	model_output_characters = 5,  # How many letters do we want in our range?
+	vision_output_dim = 1024,
+	model_output_characters = 3,  # How many letters do we want in our range?
 	model_output_dim = 255,
-	batch_size = 32,
-	num_epochs = 100,
-	learning_rate=1e-3,
+	batch_size = 16,
+	num_epochs = 1000,
+	learning_rate=1e-2,
 )
 
 
@@ -40,6 +48,7 @@ class RandomTextDataset(Dataset):
 		return self.dataset_length
 	
 	def __getitem__(self, idx):
+		#return "hi!"
 		return "".join(random.choice(self.charset) for _ in range(self.example_length))
 
 
@@ -86,18 +95,20 @@ def one_hot_to_strings(one_hot, padding_char_idx: int = 0, replacement_pad_chara
 
 class OCRModel(torch.nn.Module):
 	def __init__(self, 
-			transformer_output_dim: int = 1024,
+			vision_output_dim: int = 1024,
 			model_output_count: int = 5,
 			model_output_dim: int = 255,
 	):
 		super().__init__()
-		self.vit = vit_b_16()
-		self.vit.heads[0] = torch.nn.Linear(in_features=768, out_features=transformer_output_dim)
+		self.vision_model = resnet50(weights=None)
+		vision_model_fc_feature_count = self.vision_model.fc.in_features
+		self.vision_model.fc = torch.nn.Linear(in_features=vision_model_fc_feature_count, out_features=vision_output_dim)
 		self.output_heads = torch.nn.ModuleList([
-			torch.nn.Linear(in_features=transformer_output_dim, out_features=model_output_dim) for _ in range(model_output_count)
+			torch.nn.Linear(in_features=vision_output_dim, out_features=model_output_dim) for _ in range(model_output_count)
 		])
-		#self.output_activation = torch.nn.LogSoftmax(dim=-1)  # DO NOT RUN THIS BEFORE torch.stack OR THE DIM WILL BE WRONG!
+		self.vision_activation = torch.nn.SiLU()
 		#self.output_activation = torch.nn.SiLU()
+		#self.output_activation = torch.nn.LogSoftmax(dim=-1)  # DO NOT RUN THIS BEFORE torch.stack OR THE DIM WILL BE WRONG!  Use if we have NLLLoss.
 		self.output_activation = torch.nn.Softmax(dim=-1)
 		#self.output_activation = torch.nn.Identity()
 		# Do we want also output_to_output?
@@ -107,7 +118,7 @@ class OCRModel(torch.nn.Module):
 		# If return_logits is False, the return shape is (cap_length, batch_size)
 		# Assume image_in size is 3, 224, 224.
 		assert image_in[0].shape == (3, 224, 224)
-		embeddings = self.vit(image_in)  # Now (b, self.transformer_output_dim)
+		embeddings = self.vision_activation(self.vision_model(image_in))
 		logits_out = list()
 		for output_head in self.output_heads:
 			# output = output_head(embeddings)
@@ -124,7 +135,7 @@ class OCRModel(torch.nn.Module):
 			# We should do torch.nn.LogSoftmax here because with torch.nn.NLLLoss "The input given through a forward call is expected to contain log-probabilities of each class"
 			return logits_out
 		else:
-			return torch.argmax(logits_out, dim=2)
+			return torch.argmax(logits_out, dim=-1)
 
 			
 def custom_collate(list_of_tuples):
@@ -138,7 +149,8 @@ def custom_collate(list_of_tuples):
 
 def train(device, model, dataset, batch_size: int = 10, num_epochs: int = 1, learning_rate: float = 1e-6):
 	#loss_fn = torch.nn.NLLLoss()
-	loss_fn = torch.nn.CrossEntropyLoss()
+	#loss_fn = torch.nn.CrossEntropyLoss()
+	loss_fn = torch.nn.BCELoss()
 	optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
 	# If we want to use dataloader...
@@ -147,34 +159,38 @@ def train(device, model, dataset, batch_size: int = 10, num_epochs: int = 1, lea
 	for epoch in tqdm(range(0, num_epochs)):
 		epoch_total_loss = 0.0
 		lowest_epoch_loss = None
+		local_step = 0
 		
 		model.train()
-		
-		# If using dataset loader:
 		for batch_x, batch_y in tqdm(batch_loader):
 			batch_x = batch_x.to(device)
 			batch_y = batch_y.to(device)
 			
 			# Inference:
 			optimizer.zero_grad()
-			preds = model(batch_x, return_logits=True)
-
-			# Accumulate loss across steps:
-			# NLLLoss expects (batch, class).
+			preds = model(batch_x, return_logits=True)  # Return logits should be False for NLL and True for BCE.
+			# NLLLoss expects (batch, class), but BCELoss requires (batch, seq, class).
 			loss = loss_fn(preds, batch_y)
 			loss.backward()
 			optimizer.step()
 
 			batch_loss = loss.item()
 			epoch_total_loss += batch_loss
-			print(batch_loss)
+			if writer:
+				writer.add_scalar("batch_loss", batch_loss, (epoch*len(dataset))+local_step)
+				if (local_step//batch_size) % 10 == 0:
+					writer.add_image("sample_image", batch_x[0], epoch*len(dataset)+local_step)
+					#writer.add_text("sample_text", one_hot_to_strings(batch_y[0]), epoch*len(dataset)+local_step)
+			local_step += batch_size
+
+		# Maybe save the model at this point:
 		epoch_mean_loss = epoch_total_loss / float(len(dataset))
 		if lowest_epoch_loss is None or epoch_mean_loss < lowest_epoch_loss:
 			lowest_epoch_loss = epoch_mean_loss
 			torch.save(model, os.path.join("checkpoints", f"ckpt_{epoch}_loss_{epoch_mean_loss}.pt"))
-		print(epoch_total_loss)
 
-		# Evaluate.
+		# Validation:
+		print(epoch_total_loss)
 		model.eval()
 		composite_image, text, _ = dataset[0]
 		with torch.no_grad():
@@ -186,35 +202,35 @@ def train(device, model, dataset, batch_size: int = 10, num_epochs: int = 1, lea
 
 def main():
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	model = OCRModel(transformer_output_dim=config['transformer_output_dim'], model_output_count=config['model_output_characters'], model_output_dim=config['model_output_dim']).to(device)
+	model = OCRModel(vision_output_dim=config['vision_output_dim'], model_output_count=config['model_output_characters'], model_output_dim=config['model_output_dim']).to(device)
 
 	# Whip up a text dataset:
 	text_dataset = RandomTextDataset(dataset_length=10000, example_length=config['model_output_characters'])
 	
 	# Random image dataset:
-	image_dataset = [i[0] for i in FakeData(size=100, image_size=(3, 224, 224),)]
+	#image_dataset = [i[0] for i in FakeData(size=1000, image_size=(3, 224, 224),)] + [Image.new("RGB", (224, 224)) for _ in range(100)]
+	image_dataset = [Image.new("RGB", (224, 224)) for _ in range(2)]
 
 	# New meta-dataset:
 	dataset = TextOverlayDataset(
 		image_dataset = image_dataset, 
 		text_dataset = text_dataset, 
 		font_directory="./fonts/",
-		font_sizes=[6, 8, 12, 24],
+		font_sizes=[12, 16, 24, 48, 64, 96, 144],
 		randomly_choose="image", # We want to go over all the text.  Images are less important because they're random.
-		maximum_font_translation_percent=0.5,
-	    maximum_font_rotation_percent=0.25,
-	    maximum_font_blur=0.2,
-		#long_text_behavior = 'truncate_then_shrink',
+		maximum_font_translation_percent=0.4,
+		maximum_font_rotation_percent=0.2,
+		maximum_font_blur=0.2,
 		long_text_behavior = 'empty',
 	)
 
 	# Train:
 	try:
-		train(device, model, dataset, config['batch_size'], config['num_epochs'], config['learning_rate'])
+		train(device, model, dataset, batch_size=config['batch_size'], num_epochs=config['num_epochs'], learning_rate=config['learning_rate'])
 		torch.save(model, "./final_ocr_model.pt")
 	except Exception as e:
 		print(f"EXCEPTION: {e}")
-		torch.save(model, "./ocr_model.pt")
+		torch.save(model, "./ocrvision_modeldel.pt")
 		breakpoint()
 		raise
 
