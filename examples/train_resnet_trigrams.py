@@ -9,7 +9,7 @@ from typing import List, Optional
 
 import torch
 from PIL import Image
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets.fakedata import FakeData
 from torchvision.models import resnet50
@@ -30,7 +30,7 @@ except ModuleNotFoundError:
 config = dict(
 	run_name="Random Noise + Random Text",
 	vision_output_dim = 1024,
-	model_output_characters = 3,  # How many letters do we want in our range?
+	model_output_characters = 5,  # How many letters do we want in our range?
 	model_output_dim = 255,
 	batch_size = 16,
 	num_epochs = 1000,
@@ -151,14 +151,15 @@ def train(device, model, dataset, batch_size: int = 10, num_epochs: int = 1, lea
 	#loss_fn = torch.nn.NLLLoss()
 	#loss_fn = torch.nn.CrossEntropyLoss()
 	loss_fn = torch.nn.BCELoss()
-	optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+	optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+	scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=10)
 
 	# If we want to use dataloader...
 	batch_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate, num_workers=8, multiprocessing_context='spawn')
 
+	lowest_epoch_loss = None
 	for epoch in tqdm(range(0, num_epochs)):
 		epoch_total_loss = 0.0
-		lowest_epoch_loss = None
 		local_step = 0
 		
 		model.train()
@@ -183,8 +184,11 @@ def train(device, model, dataset, batch_size: int = 10, num_epochs: int = 1, lea
 					#writer.add_text("sample_text", one_hot_to_strings(batch_y[0]), epoch*len(dataset)+local_step)
 			local_step += batch_size
 
-		# Maybe save the model at this point:
+		# Compute our performance metrics for the learning rate and determine if we're ready to downshift.
 		epoch_mean_loss = epoch_total_loss / float(len(dataset))
+		scheduler.step(epoch_mean_loss)
+
+		# Maybe save the model at this point:
 		if lowest_epoch_loss is None or epoch_mean_loss < lowest_epoch_loss:
 			lowest_epoch_loss = epoch_mean_loss
 			torch.save(model, os.path.join("checkpoints", f"ckpt_{epoch}_loss_{epoch_mean_loss}.pt"))
@@ -218,9 +222,9 @@ def main():
 		font_directory="./fonts/",
 		font_sizes=[12, 16, 24, 48, 64, 96, 144],
 		randomly_choose="image", # We want to go over all the text.  Images are less important because they're random.
-		maximum_font_translation_percent=0.4,
-		maximum_font_rotation_percent=0.2,
-		maximum_font_blur=0.2,
+		maximum_font_translation_percent=0.1,
+		maximum_font_rotation_percent=1.0,
+		maximum_font_blur=1.2,
 		long_text_behavior = 'empty',
 	)
 

@@ -234,6 +234,7 @@ def fast_conservative_theta_range(
     inner_box_points = inner_box_points[:, :2] - centerpoint
     outer_box_width = min(outer_box_width - center_x, center_x)  # Worst-case scenario the inner box is right up against the edge.
     outer_box_height = min(outer_box_height - center_y, center_y)  # Try and find the smallest distance to an edge.
+    min_outer_dimension = min(outer_box_width, outer_box_height)
     # Remember distance = sqrt(dx*dx + dy*dy).  We can do this in one step via numpy:
     magnitudes = (inner_box_points * inner_box_points).sum(axis=1) ** 0.5
     farthest_point_idx = numpy.argmax(magnitudes)
@@ -246,20 +247,21 @@ def fast_conservative_theta_range(
     # so we need to bring it back by start_theta-t
     # Same applies for r * sin(t) = outer_box_height, but we need to increase to the angle.
 
+    # If our text happens to have zero width, don't crash, just assume vertical:
     if abs(far_point[0]) > 1e-8:
         start_theta = math.tan(abs(far_point[1]) / abs(far_point[0]))  # Enforce first quadrant.
     else:
         start_theta = math.pi/2
 
-    if outer_box_width > radius:
-        min_angle = 0
-    else:
-        min_angle = start_theta - math.acos(outer_box_width / radius)
-
-    if outer_box_height > radius:
+    if min_outer_dimension > radius:
+        min_angle = -math.pi
         max_angle = math.pi
     else:
-        max_angle = math.asin(outer_box_height / radius) - start_theta
+        wall_angle = -(start_theta - math.acos(min_outer_dimension / radius))
+        ceiling_angle = -(start_theta - math.asin(min_outer_dimension / radius))
+        max_angle = -max(wall_angle, ceiling_angle)  # NOTE: The max of two negatives will be the min!
+        min_angle = -max_angle
+
     return min_angle, max_angle
 
 

@@ -329,13 +329,26 @@ class TextOverlayDataset(Dataset):
                 # Try and generate the text.
                 canvas = Image.new('L', (width, height), color=0)
                 draw = ImageDraw.Draw(canvas)
-                text_bbox = draw.textbbox((width//2, height//2), text, font=font, anchor="mm", align=alignment)
+                try:
+                    text_bbox = draw.textbbox((width//2, height//2), text, font=font, anchor="mm", align=alignment)
+                except OSError:
+                    # HACK: The font may be missing a glyph
+                    print(f"WARNING: os.error when attempting to compute BBOX for {font_choice} -- skipping font.")
+                    text = ""  # Set the text to empty
+                    continue
                 left, top, right, bottom = text_bbox
                 text_width = right-left
                 text_height = abs(top-bottom)
                 # We may have to recenter the text.
                 if text_width < width and text_height < height:
-                    draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
+                    try:
+                        draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
+                    except OSError:
+                        print(f"WARNING: os.error in writing {font_choice} -- either the glyph or size is unsupported.")
+                        # HACK: This font is missing a glyph of some sort -- force a skip and move on.
+                        # We can't tell if the glyph is missing at this size or for this whole font.
+                        size_idx = -1
+                        continue
                     result = TextOverlayExample(
                         text=text,
                         text_rasterization=canvas,
