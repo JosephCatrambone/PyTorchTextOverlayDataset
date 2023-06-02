@@ -340,7 +340,7 @@ class TextOverlayDataset(Dataset):
                 text_width = right-left
                 text_height = abs(top-bottom)
                 # We may have to recenter the text.
-                if text_width < width and text_height < height:
+                if text_width < width and text_height < height and left > 0 and right < width and top > 0 and bottom < height:
                     try:
                         draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
                     except OSError:

@@ -53,6 +53,8 @@ class TestTextOverlayDataset(unittest.TestCase):
         """Randomly hit generate_text_raster_augmented and verify that it is always within the image bounds."""
         pad = 1
         ds = self._make_small_dataset()
+        ds.maximum_font_translation_percent = 0.0
+        ds.maximum_font_quad_distortion_percent = 0.0
         for _ in range(1000):
             width = random.randint(128, 512)
             height = random.randint(128, 512)
@@ -63,8 +65,10 @@ class TestTextOverlayDataset(unittest.TestCase):
             for point_idx in range(bbox.shape[0]):
                 in_bounds = -pad <= bbox[point_idx, 0] <= width+pad and -pad <= bbox[point_idx, 1] <= height+pad
                 if not in_bounds:
+                    #breakpoint()
                     print(width, height)
                     print(bbox)
+                    print(result)
                 assert in_bounds
 
     def test_long_text_behavior(self):

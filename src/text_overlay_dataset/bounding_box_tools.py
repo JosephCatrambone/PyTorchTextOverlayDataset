@@ -259,8 +259,13 @@ def fast_conservative_theta_range(
     else:
         wall_angle = -(start_theta - math.acos(min_outer_dimension / radius))
         ceiling_angle = -(start_theta - math.asin(min_outer_dimension / radius))
-        max_angle = -max(wall_angle, ceiling_angle)  # NOTE: The max of two negatives will be the min!
+        max_angle = abs(max(wall_angle, ceiling_angle))  # NOTE: The max of two negatives will be the min, so we flip it with negatives!
         min_angle = -max_angle
+
+    # DEBUG:
+    #aabb = rotate_around_point(numpy.hstack([inner_box_points[:,:2] + centerpoint, numpy.ones((4, 1))]), max_angle-0.001, center_x, center_y)
+    #if numpy.any(aabb < 0.0):
+    #    breakpoint()
 
     return min_angle, max_angle
 
