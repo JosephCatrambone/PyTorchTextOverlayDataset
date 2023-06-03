@@ -5,25 +5,20 @@ sys.path.append("/home/joseph/PythonSource/PyTorchTextOverlayDataset/src/")
 import math
 import random
 import os
+from glob import glob
 from typing import List, Optional
 
 import torch
+import torchvision
 from PIL import Image
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets.fakedata import FakeData
 from torchvision.models import resnet50
-from torchvision.transforms import CenterCrop
+from torchvision.transforms import RandomResizedCrop, ToPILImage, PILToTensor
 from torchvision.transforms.functional import pil_to_tensor
 from text_overlay_dataset import TextOverlayDataset
 from tqdm import tqdm
-
-try:
-	from torch.utils.tensorboard import SummaryWriter
-	writer = SummaryWriter("runs/train_resnet_trigrams")
-except ModuleNotFoundError:
-	print("tensorboard not found.  Ignoring TB writer.")
-	writer = None
 
 
 # logging
@@ -36,6 +31,12 @@ config = dict(
 	num_epochs = 1000,
 	learning_rate=1e-2,
 )
+try:
+	from torch.utils.tensorboard import SummaryWriter
+	writer = SummaryWriter("runs/train_resnet_trigrams")
+except ModuleNotFoundError:
+	print("tensorboard not found.  Ignoring TB writer.")
+	writer = None
 
 
 class RandomTextDataset(Dataset):
@@ -50,6 +51,17 @@ class RandomTextDataset(Dataset):
 	def __getitem__(self, idx):
 		#return "hi!"
 		return "".join(random.choice(self.charset) for _ in range(self.example_length))
+
+
+class ImageDataset(Dataset):
+	def __init__(self, path_glob: str):
+		self.image_filenames = glob(path_glob)
+
+	def __len__(self):
+		return len(self.image_filenames)
+
+	def __getitem__(self, idx):
+		return Image.open(self.image_filenames[idx]).convert("RGB")
 
 
 def strings_to_one_hot(texts: List[str], padding_char_idx: int = 0, max_length: Optional[int] = None):
@@ -148,6 +160,14 @@ def custom_collate(list_of_tuples):
 
 
 def train(device, model, dataset, batch_size: int = 10, num_epochs: int = 1, learning_rate: float = 1e-6):
+	# For logging.
+	# We only do this import locally so we don't get multiple instances from the different data-loader forks
+	try:
+		import wandb
+		wandb.init(project="SimpleOCR", config=config)
+	except ImportError:
+		wandb = None
+
 	#loss_fn = torch.nn.NLLLoss()
 	#loss_fn = torch.nn.CrossEntropyLoss()
 	loss_fn = torch.nn.BCELoss()
@@ -182,6 +202,8 @@ def train(device, model, dataset, batch_size: int = 10, num_epochs: int = 1, lea
 				if (local_step//batch_size) % 10 == 0:
 					writer.add_image("sample_image", batch_x[0], epoch*len(dataset)+local_step)
 					#writer.add_text("sample_text", one_hot_to_strings(batch_y[0]), epoch*len(dataset)+local_step)
+			if wandb:
+				wandb.log({"batch_loss": batch_loss, "step": (epoch*len(dataset))+local_step})
 			local_step += batch_size
 
 		# Compute our performance metrics for the learning rate and determine if we're ready to downshift.
@@ -213,19 +235,26 @@ def main():
 	
 	# Random image dataset:
 	#image_dataset = [i[0] for i in FakeData(size=1000, image_size=(3, 224, 224),)] + [Image.new("RGB", (224, 224)) for _ in range(100)]
-	image_dataset = [Image.new("RGB", (224, 224)) for _ in range(2)]
+	#image_dataset = [Image.new("RGB", (224, 224)) for _ in range(2)]
+	image_dataset = ImageDataset("/home/joseph/MLData/train_512/*.jpg")
 
 	# New meta-dataset:
 	dataset = TextOverlayDataset(
 		image_dataset = image_dataset, 
 		text_dataset = text_dataset, 
 		font_directory="./fonts/",
-		font_sizes=[12, 16, 24, 48, 64, 96, 144],
-		randomly_choose="image", # We want to go over all the text.  Images are less important because they're random.
-		maximum_font_translation_percent=0.1,
-		maximum_font_rotation_percent=1.0,
-		maximum_font_blur=1.2,
+		font_sizes=[12, 16, 24, 48, 64, 96],
+		#randomly_choose="image",
+		maximum_font_translation_percent=0.2,
+		maximum_font_rotation_percent=0.4,
+		maximum_font_blur=3.2,
 		long_text_behavior = 'empty',
+		prefer_larger_fonts=True,
+		pre_composite_transforms=[
+			PILToTensor(),
+			RandomResizedCrop(size=(224, 224), antialias=True),
+			ToPILImage(),
+		],
 	)
 
 	# Train:
@@ -234,10 +263,10 @@ def main():
 		torch.save(model, "./final_ocr_model.pt")
 	except Exception as e:
 		print(f"EXCEPTION: {e}")
-		torch.save(model, "./ocrvision_modeldel.pt")
+		torch.save(model, "./ocrvision_model.pt")
 		breakpoint()
 		raise
-
+	
 
 if __name__=="__main__":
 	main()
