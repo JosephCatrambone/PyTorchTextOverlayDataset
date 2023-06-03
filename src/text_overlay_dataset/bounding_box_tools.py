@@ -249,7 +249,9 @@ def fast_conservative_theta_range(
 
     # If our text happens to have zero width, don't crash, just assume vertical:
     if abs(far_point[0]) > 1e-8:
-        start_theta = math.tan(abs(far_point[1]) / abs(far_point[0]))  # Enforce first quadrant.
+        # We can move this angle into the first quadrent without loss of generality.
+        # Doesn't matter that we use atan instead of atan2 because w're using abs.
+        start_theta = math.atan(abs(far_point[1]) / abs(far_point[0]))
     else:
         start_theta = math.pi/2
 
@@ -257,15 +259,10 @@ def fast_conservative_theta_range(
         min_angle = -math.pi
         max_angle = math.pi
     else:
-        wall_angle = -(start_theta - math.acos(min_outer_dimension / radius))
-        ceiling_angle = -(start_theta - math.asin(min_outer_dimension / radius))
-        max_angle = abs(max(wall_angle, ceiling_angle))  # NOTE: The max of two negatives will be the min, so we flip it with negatives!
+        wall_angle = start_theta - math.acos(min_outer_dimension / radius)
+        ceiling_angle = start_theta - math.asin(min_outer_dimension / radius)
+        max_angle = min(abs(wall_angle), abs(ceiling_angle))  # NOTE: The max of two negatives will be the min, so we flip it with negatives!
         min_angle = -max_angle
-
-    # DEBUG:
-    #aabb = rotate_around_point(numpy.hstack([inner_box_points[:,:2] + centerpoint, numpy.ones((4, 1))]), max_angle-0.001, center_x, center_y)
-    #if numpy.any(aabb < 0.0):
-    #    breakpoint()
 
     return min_angle, max_angle
 

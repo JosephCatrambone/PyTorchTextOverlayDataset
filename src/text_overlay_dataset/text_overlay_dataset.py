@@ -427,8 +427,8 @@ class TextOverlayDataset(Dataset):
             # JC: Variable name choice: Slop?  Play?  Tolerance?
             left_movement = left * random.random()
             right_movement = (width - right) * random.random()
-            up_movement = min(top, bottom) * random.random()
-            down_movement = (height - max(top, bottom)) * random.random()
+            up_movement = top * random.random()
+            down_movement = (height - bottom) * random.random()
             dx = (right_movement - left_movement) * self.maximum_font_translation_percent
             dy = (down_movement - up_movement) * self.maximum_font_translation_percent
             # Translate by this amount.
