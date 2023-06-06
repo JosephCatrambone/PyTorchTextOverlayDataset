@@ -225,6 +225,7 @@ def fast_conservative_theta_range(
 
     Order ABCD does not matter, but the matrix should be 4x2 or 4x3.
     """
+    inner_box_points = inner_box_points.copy()  # We mutate this internally and have to copy it.
     centerpoint = inner_box_points.mean(axis=0)[:2]
     center_x, center_y = centerpoint[:]
     # EDGE CASE: If the pivot is outside of the box, return None.
@@ -323,6 +324,7 @@ def rotate_around_point(points: numpy.generic, angle: float, x: float, y: float)
     ion, assuming y-down. Remember that PIL uses a left-handed y-down chirality.  Increasing angle rotates counter-
     clockwise.
     """
+    points = points.copy()
     p = numpy.asarray([x, y, 1.0])
     points -= p
     points = points @ make_rotation_matrix_2d(angle)

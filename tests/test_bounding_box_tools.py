@@ -3,6 +3,7 @@ test_bounding_box_tools.py
 """
 
 import math
+import random
 import unittest
 
 import numpy
@@ -91,6 +92,34 @@ class TestBoundingBoxTools(unittest.TestCase):
         self.assertAlmostEqual(limits[1], real_limit, 5, "Upper limit isn't calculated correctly.")
         new_pts = rotate_around_point(aabb, limits[1], box_center[0], box_center[1])
         self.assertAlmostEqual(new_pts.max(axis=0)[1], image_size[1], 5, "After rotation about max, no ceiling hit.")
+
+    def test_fuzz_fast_conservative_theta_range(self):
+        """Throw random rotations at the fast_conservative_theta_range function and make sure they're always valid."""
+        rotation_substeps = 100
+        for _ in range(0, 1000):
+            outer_box_width = random.randint(32, 1000)
+            outer_box_height = random.randint(32, 1000)
+
+            left = random.randint(0, outer_box_width - 2)
+            top = random.randint(0, outer_box_height - 2)
+            right = random.randint(left, outer_box_width-1)
+            bottom = random.randint(top, outer_box_height - 1)
+
+            aabb = bbox_to_aabb(left, top, right, bottom)
+            pivot_x = (left+right)/2
+            pivot_y = (top+bottom)/2
+
+            limits = fast_conservative_theta_range(aabb, outer_box_width, outer_box_height)
+            if limits is None:
+                continue
+            for rotation_step in range(1, rotation_substeps-1):
+                rotation = ((rotation_step / rotation_substeps) * (limits[1]-limits[0])) + limits[0]
+                rotated_aabb = rotate_around_point(aabb, rotation, pivot_x, pivot_y)
+                positive = numpy.all(rotated_aabb >= 0.0)
+                bounded = numpy.all(rotated_aabb <= numpy.asarray([outer_box_width, outer_box_height, 1]))
+                self.assertTrue(positive)
+                self.assertTrue(bounded)
+
 
 
 if __name__ == '__main__':
