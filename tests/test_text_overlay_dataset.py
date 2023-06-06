@@ -75,6 +75,7 @@ class TestTextOverlayDataset(unittest.TestCase):
         ds = TextOverlayDataset(
             image_dataset,
             text_dataset,
+            text_wrap_function='none',
             font_directory="fonts",
             long_text_behavior='exception',
         )

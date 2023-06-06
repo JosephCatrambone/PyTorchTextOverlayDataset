@@ -4,10 +4,11 @@ text_overlay_dataset.py
 import math
 import os
 import random
+import textwrap
 from dataclasses import dataclass, field
 from glob import glob
 from io import BytesIO
-from typing import List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy
 import torch
@@ -91,7 +92,7 @@ class TextOverlayDataset(Dataset):
     """
 
     RANDOM_DATASET_CHOICES = {'text', 'image'}
-    LONG_TEXT_BEHAVIOUR = {'empty', 'truncate_then_shrink', 'shrink_then_truncate', 'exception'}
+    LONG_TEXT_BEHAVIOUR = {'empty', 'truncate_then_shrink', 'shrink_then_truncate', 'exception'} # TODO: overflow?
 
     def __init__(
             self,
@@ -99,6 +100,7 @@ class TextOverlayDataset(Dataset):
             text_dataset: Union[List[str], Dataset],
             font_directory: Union[os.PathLike, str],
 
+            text_wrap_function: Union[Callable, str] = "default",
             pre_composite_transforms: Optional[List] = None,
             post_composite_transforms: Optional[List] = None,
             text_raster_transforms: Optional[List] = None,
@@ -109,6 +111,11 @@ class TextOverlayDataset(Dataset):
             prefer_larger_fonts: bool = False,
 
             only_english_support: bool = False,
+
+            minimum_font_width_percent: float = 0.5,
+            maximum_font_width_percent: float = 0.8,
+            minimum_font_height_percent: float = 0.5,
+            maximum_font_height_percent: float = 0.8,
 
             maximum_font_translation_percent: float = 0.0,
             maximum_font_rotation_percent: float = 0.0,
@@ -131,6 +138,12 @@ class TextOverlayDataset(Dataset):
         :param os.PathLike | str font_directory:
         A user-readable directory containing true-type and open-type font files.
         font_directory should not have a trailing slash and should contain one or more TTF/OTFs.
+
+        :param Callable | str text_wrap_function:
+        text_wrapper can be a string of 'default', the string 'none', or a callable method which takes a string and a
+        width (integer) and returns the newly wrapped text.  If 'default' is specified, a default text wrapper will be
+        generated with sensible defaults.  If 'none' is specified, text will not be modified at all.  This could also
+        be considered the 'text_preprocessor' in some sense.
 
         :param list pre_composite_transforms:
         The torchvision transforms that will be called (in order) on the sampled image.
@@ -182,6 +195,22 @@ class TextOverlayDataset(Dataset):
         enables non-English sentences.  If your text is solely English (LTR, Ascii, etc), you may see slightly better
         performance by setting this to 'false'.
 
+        :param float minimum_font_width_percent:
+        A value between 0 and 1 which indicates the smallest rectangle that can be selected for filling with text.
+        Bear in mind that text might not be able to fit inside a rectangle that is too small.
+
+        :param float maximum_font_width_percent:
+        A value between 0 and 1 which dictates how much of the horizontal width of the parent image the text can take.
+        This value must be larger than the minimum_font_width_percent. Keep in mind that a larger rectangle leaves less
+        room for the text inside to be rotated and translated.
+
+        :param float minimum_font_height_percent:
+        A percentage (0 to 1 inclusive) of the image's height that the inner text might occupy.  See also
+        minimum_font_width_percent.
+
+        :param float maximum_font_height_percent:
+        A float from 0-1 inclusive that indicates how much of an image text may be allowed to occupy.
+
         :param float maximum_font_translation_percent:
         A value between 0 and 1 which indicates how much the text will move inside the image on which it's composited.
         A value of 0.0 (default) means the text will always be displayed exactly centered.  A value of 1.0 means the
@@ -207,15 +236,28 @@ class TextOverlayDataset(Dataset):
         self.image_dataset = image_dataset
         self.text_dataset = text_dataset
 
+        if text_wrap_function is None:
+            self.text_wrap_function = lambda x: x
+        if isinstance(text_wrap_function, str):
+            if text_wrap_function.lower() == "default":
+                self.text_wrap_function = textwrap.wrap
+            elif text_wrap_function.lower() == "none":
+                self.text_wrap_function = lambda x: x
+            else:
+                raise ValueError(f"Unknown text_wrap_function: {text_wrap_function} - Should be default, none, or fn.")
+        elif isinstance(text_wrap_function, Callable):
+            self.text_wrap_function = text_wrap_function
+
         self.pre_composite_transforms = pre_composite_transforms
         self.post_composite_transforms = post_composite_transforms
         self.text_raster_transforms = text_raster_transforms
 
         # PIL font loading behaves a little strangely when shared across threads.  We have to load our fonts after the
         # dataset is forked or we get sharing problems.
-        self.font_choices = glob(os.path.join(font_directory, "*.*tf"))  # *.*tf gives us TTF and OTF.
-        assert self.font_choices, f"No fonts detected in font_directory: {font_directory}"
+        font_choices = glob(os.path.join(font_directory, "*.*tf"))  # *.*tf gives us TTF and OTF.
+        assert font_choices, f"No fonts detected in font_directory: {font_directory}"
         self.loaded_fonts = None  # This will become a dict [str -> font].
+        self._preload_fonts(font_choices)
 
         # For dataset iteration, do we need to randomly sample from one of the input datasets?
         self.randomize_text = False
@@ -245,6 +287,13 @@ class TextOverlayDataset(Dataset):
         self.layout = ImageFont.LAYOUT_RAQM
         if only_english_support:
             self.layout = ImageFont.LAYOUT_BASIC
+
+        # JC: I hate these variable names.
+        # TODO: Find better ones or look for a way to refactor.
+        self.minimum_font_width_percent = minimum_font_width_percent
+        self.maximum_font_width_percent = maximum_font_width_percent
+        self.minimum_font_height_percent = minimum_font_height_percent
+        self.maximum_font_height_percent = maximum_font_height_percent
 
         self.maximum_font_translation_percent = maximum_font_translation_percent
         self.maximum_font_rotation_percent = maximum_font_rotation_percent
@@ -279,6 +328,69 @@ class TextOverlayDataset(Dataset):
             return self.text_dataset[random.randint(0, len(self.text_dataset)-1)]
         return self.text_dataset[idx]
 
+    def _preload_fonts(self, font_filenames: List[str]):
+        self.loaded_fonts = dict()
+        for filename in font_filenames:
+            # A note on this:
+            # On Windows the TrueType system keeps fonts open until the TTF object goes out of scope.  This caps
+            # the number of open fonts to 512 and can lead to OSErrors on load.  We get around this by copying
+            # the font into memory first.
+            with open(filename, 'rb') as fin:
+                buffer = BytesIO()
+                buffer.write(fin.read())
+                self.loaded_fonts[filename] = buffer
+
+    def _generate_text_rectangle(
+            self,
+            image_width: int,
+            image_height: int,
+    ) -> Tuple[int, int]:
+        """Given an image_width and image_height, generate a bounding box for the text that we will try to fit as
+        closely as possible.  We may be undersized, but we should not be over unless there are ligatures or font
+        artifacts that we can't see from our initial scans.  This makes no guarantee about readability or whether the
+        font will be able to fit in the bounding box -- this ONLY generates a box, left, top, right, bottom, that
+        adheres to our init parameters.
+        """
+        rect_width = random.randrange(
+            int(image_width*self.minimum_font_width_percent),
+            int(image_width*self.maximum_font_width_percent)
+        )
+        rect_height = random.randrange(
+            int(image_height * self.minimum_font_height_percent),
+            int(image_height * self.maximum_font_height_percent)
+        )
+        return rect_width, rect_height
+
+    def _find_max_font_size_and_wrap(
+            self,
+            text: str,
+            font_name: str,
+            max_width: int,
+            max_height: int,
+    ) -> Tuple[int, int]:
+        """Given a not word-wrapped text and a font name, determine which font size will be as close as possible to
+        fitting the given text to the given rectangle. The return value may be zero, but it will not be negative.
+        The font_name must already have been loaded into the 'loaded_fonts' cache.
+        """
+        raise NotImplemented("Start here.")
+        font_size = (self.font_sizes[0] + self.font_sizes[-1])//2
+        font_size_low = self.font_sizes[0]
+        font_size_high = self.font_sizes[-1]
+        last_valid_size = 0
+
+        # This is a fake canvas.  We don't actually need any size to it.
+        canvas = Image.new('L', (1, 1), color=0)
+        draw = ImageDraw.Draw(canvas)
+
+        while True:
+            font = ImageFont.truetype(self.loaded_fonts[font_name], font_size, layout_engine=self.layout)
+            try:
+                # NOTE: anchor = left ascender rather than left-top because the ascender won't change with glyphs.
+                left, top, right, bottom = draw.textbbox((0, 0), text, font=font, anchor="la")
+            except OSError:
+                # Oof.  This font is missing a glyph or there's something VERY strange going on.  We have to abort.
+                return 0
+
     def _generate_text_raster_basic(
             self,
             text: str,
@@ -293,9 +405,6 @@ class TextOverlayDataset(Dataset):
         :param height:
         :return: None on the failure to composite, otherwise a partially filled TextOverlayExample.
         """
-        if self.loaded_fonts is None:
-            self.loaded_fonts = dict()
-
         text_width = width + 1
         text_height = height + 1
         start_text = text
@@ -307,19 +416,10 @@ class TextOverlayDataset(Dataset):
             if not self.prefer_larger_fonts:
                 size_idx = random.randint(0, len(self.font_sizes)-1)  # We pick a random starting size for our font.
             font_size = self.font_sizes[size_idx]
-            font_choice = random.choice(self.font_choices)
+            font_choice = random.choice(list(self.loaded_fonts.keys()))  # TODO: Benchmark: how efficient is this?
             text = start_text  # Restart from full text length, just in case we're truncating.
 
             while (text_width > width or text_height > height) and size_idx >= 0 and len(text) > 1:
-                if font_choice not in self.loaded_fonts:
-                    # A note on this:
-                    # On Windows the TrueType system keeps fonts open until the TTF object goes out of scope.  This caps
-                    # the number of open fonts to 512 and can lead to OSErrors on load.  We get around this by copying
-                    # the font into memory first.
-                    with open(font_choice, 'rb') as fin:
-                        buffer = BytesIO()
-                        buffer.write(fin.read())
-                        self.loaded_fonts[font_choice] = buffer
                 self.loaded_fonts[font_choice].seek(0)
                 font = ImageFont.truetype(
                     self.loaded_fonts[font_choice],
