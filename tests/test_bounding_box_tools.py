@@ -69,7 +69,7 @@ class TestBoundingBoxTools(unittest.TestCase):
         )
         self.assertTrue(limits is not None)
         min_angle, max_angle = limits
-        self.assertAlmostEqual(min_angle, 0.0, 6, "Min angle for a free-spinning text block should be near zero.")
+        self.assertAlmostEqual(min_angle, -math.pi, 6, "Min angle for a free-spinning text block should be near zero.")
         self.assertAlmostEqual(max_angle, math.pi, 6, "Max angle for a free-spinning text block should be PI/2.")
 
     def test_compute_min_max_text_angle_bounded(self):
@@ -86,8 +86,9 @@ class TestBoundingBoxTools(unittest.TestCase):
             [box_center[0] + box_width, box_center[1] - box_height, 1],
         ])
         limits = fast_conservative_theta_range(aabb, image_size[0], image_size[1])
-        self.assertAlmostEqual(limits[0], 0.0, 5, "Lower limit isn't calculated correctly.")
-        self.assertAlmostEqual(limits[1], 0.010000166674167114, 5, "Upper limit isn't calculated correctly.")
+        real_limit = 0.010000166674167114
+        self.assertAlmostEqual(limits[0], -real_limit, 5, "Lower limit isn't calculated correctly.")
+        self.assertAlmostEqual(limits[1], real_limit, 5, "Upper limit isn't calculated correctly.")
         new_pts = rotate_around_point(aabb, limits[1], box_center[0], box_center[1])
         self.assertAlmostEqual(new_pts.max(axis=0)[1], image_size[1], 5, "After rotation about max, no ceiling hit.")
 

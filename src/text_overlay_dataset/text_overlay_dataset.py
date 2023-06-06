@@ -329,13 +329,26 @@ class TextOverlayDataset(Dataset):
                 # Try and generate the text.
                 canvas = Image.new('L', (width, height), color=0)
                 draw = ImageDraw.Draw(canvas)
-                text_bbox = draw.textbbox((width//2, height//2), text, font=font, anchor="mm", align=alignment)
+                try:
+                    text_bbox = draw.textbbox((width//2, height//2), text, font=font, anchor="mm", align=alignment)
+                except OSError:
+                    # HACK: The font may be missing a glyph
+                    print(f"WARNING: os.error when attempting to compute BBOX for {font_choice} -- skipping font.")
+                    text = ""  # Set the text to empty
+                    continue
                 left, top, right, bottom = text_bbox
                 text_width = right-left
                 text_height = abs(top-bottom)
                 # We may have to recenter the text.
-                if text_width < width and text_height < height:
-                    draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
+                if text_width < width and text_height < height and left > 0 and right < width and top > 0 and bottom < height:
+                    try:
+                        draw.text((width//2, height//2), text, font=font, anchor="mm", align=alignment, fill=255)
+                    except OSError:
+                        print(f"WARNING: os.error in writing {font_choice} -- either the glyph or size is unsupported.")
+                        # HACK: This font is missing a glyph of some sort -- force a skip and move on.
+                        # We can't tell if the glyph is missing at this size or for this whole font.
+                        size_idx = -1
+                        continue
                     result = TextOverlayExample(
                         text=text,
                         text_rasterization=canvas,
@@ -414,8 +427,8 @@ class TextOverlayDataset(Dataset):
             # JC: Variable name choice: Slop?  Play?  Tolerance?
             left_movement = left * random.random()
             right_movement = (width - right) * random.random()
-            up_movement = min(top, bottom) * random.random()
-            down_movement = (height - max(top, bottom)) * random.random()
+            up_movement = top * random.random()
+            down_movement = (height - bottom) * random.random()
             dx = (right_movement - left_movement) * self.maximum_font_translation_percent
             dy = (down_movement - up_movement) * self.maximum_font_translation_percent
             # Translate by this amount.
@@ -547,9 +560,24 @@ class TextOverlayDataset(Dataset):
         text_color = f"#{text_color[0]:02X}{text_color[1]:02X}{text_color[2]:02X}"
         # Make a rectangle of this color and use the rasterized text as the alpha channel, then paste it onto pil_img.
         # TODO: Add noise to the color block?
+        # Apply whatever raster transforms we have.
+        # TODO: Should we do this on the 'L' raster or the RGB image?
         text_color_block = Image.new("RGB", (img_pil.width, img_pil.height), color=text_color)
+        if self.text_raster_transforms:
+            text_raster = result.text_rasterization
+            for trt in self.text_raster_transforms:
+                text_raster = trt(text_raster)
+            result.text_rasterization = text_raster
         text_color_block.putalpha(result.text_rasterization)
+
+        # Pre-final image:
         img_pil.paste(text_color_block, (0, 0), result.text_rasterization)
+
+        # Maybe apply transforms on the composited image.
+        if self.post_composite_transforms:
+            for tf in self.post_composite_transforms:
+                img_pil = trt(img_pil)
+        
         result.image = img_pil
 
         # Maybe dilate the mask?
