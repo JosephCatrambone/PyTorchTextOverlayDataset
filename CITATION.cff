@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, you are welcome to cite it as below."
+authors:
+- family-names: "Catrambone"
+  given-names: "Joseph"
+  orcid: "https://orcid.org/0009-0000-1382-1092"
+title: "Text Overlay Dataset"
+version: 0.1.1
+date-released: 2021-04-01
+url: "https://github.com/JosephCatrambone/PyTorchTextOverlayDataset"
+preferred-citation:
+  type: software
+  authors:
+  - family-names: "Catrambone"
+    given-names: "Joseph"
+    orcid: "https://orcid.org/0009-0000-1382-1092"
+  title: "Text Overlay Dataset"
+  url: "https://github.com/JosephCatrambone/PyTorchTextOverlayDataset"
+  year: 2021
+  month: 4
