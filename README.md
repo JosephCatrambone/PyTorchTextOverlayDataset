@@ -3,7 +3,30 @@ TextOverlayDataset
 
 A meta-dataset builder to combine text datasets and image datasets.
 
+### License:
+
+This software is dual licensed as MIT or GPLv2 at the discretion of the user.  The MIT license is included in the LICENSE file.
+
+### Citation:
+
+A citation is completely optional but would be very much appreciated if you use this project in your research.
+
+```latex
+@software{TextOverlayDataset,
+  author = {Catrambone, Joseph},
+  title = {{Text Overlay Dataset}},
+  url = {https://github.com/JosephCatrambone/PyTorchTextOverlayDataset},
+  version = {0.1.1},
+  year = {2023}
+  month = {06},
+}
+```
+
 ### Recipes:
+
+While the documentation in the TextOverlayDataset constructor is extensive, sometimes one simply wants recipes.
+
+Towards that end:
 
 ```python
 # Basic Minimal Usage:
